@@ -38,11 +38,12 @@ export class Player implements Combatant {
   ammo: Record<AmmoType, number> = { light: 24, heavy: 0, shells: 0, sniper: 0, rocket: 0 };
   slots: (WeaponInstance | null)[] = [makeWeapon('pistol'), null];
   active = 0;
-  throwables: Record<ThrowKind, number> = { frag: 0, smoke: 0, flash: 0, grapple: 0 };
+  /** You spawn with the grappling hook (3 charges). */
+  throwables: Record<ThrowKind, number> = { frag: 0, smoke: 0, flash: 0, grapple: 3 };
   /** Hooked on something with the grappling hook: where, and how long we've been reeled in. */
   grapple: { at: Vector3; t: number } | null = null;
   /** Found a grappling hook: its charges (throwables.grapple, max 3) come back one every HOOK_RECHARGE s. */
-  hookOwned = false;
+  hookOwned = true;
   hookCharge = 0;
   throwSel: ThrowKind = 'frag';
   swimming = false;

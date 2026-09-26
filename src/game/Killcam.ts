@@ -1,6 +1,7 @@
 import { Color, PerspectiveCamera, Vector3 } from 'three';
 import { Bot } from '../bots/Bot';
-import { Character } from '../bots/Character';
+import { Character, ownBodyKind } from '../bots/Character';
+import { skinOf } from './Skins';
 import type { Combatant } from './Combat';
 import type { Game } from './Game';
 
@@ -38,9 +39,16 @@ export class Killcam {
   private onDone: (() => void) | null = null;
 
   constructor(private game: Game) {
-    this.body = new Character(new Color(0x2f6fd1), new Color(0x1c2f55));
-    this.body.root.visible = false;
-    game.scene.add(this.body.root);
+    this.body = this.makeBody();
+  }
+
+  /** You, as others see you: your outfit and body style. */
+  private makeBody() {
+    const s = skinOf(this.game.profile.data.skin);
+    const b = new Character(new Color(s.suit), new Color(s.trim), undefined, s, false, ownBodyKind());
+    b.root.visible = false;
+    this.game.scene.add(b.root);
+    return b;
   }
 
   record(dt: number, now: number) {
@@ -75,6 +83,8 @@ export class Killcam {
     this.shotIdx = this.shots.findIndex((s) => s.t >= this.start);
     if (this.shotIdx < 0) this.shotIdx = this.shots.length;
     this.onDone = onDone;
+    this.game.scene.remove(this.body.root);
+    this.body = this.makeBody();
     if (this.game.player.weapon) this.body.setGun(this.game.player.weapon);
     this.body.root.visible = true;
     return true;

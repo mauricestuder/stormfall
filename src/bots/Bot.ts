@@ -13,6 +13,7 @@ import { Character } from './Character';
 import type { Skin } from '../game/Skins';
 import { buildGlider, GLIDER_HEIGHT } from '../world/Glider';
 import type { ZipLine } from '../world/Interactive';
+import { BOSS_LEASH, type BossState } from './Boss';
 
 const P = CONFIG.player;
 const D = CONFIG.drop;
@@ -70,6 +71,10 @@ export class Bot implements Combatant {
   kills = 0;
   plates = Math.random() < 0.5 ? 1 : 0;
   weapon: WeaponInstance = makeWeapon('pistol');
+  /** A second gun, if they've found one worth carrying (like you, bots have two slots). */
+  backup: WeaponInstance | null = null;
+  /** Seconds before they'll swap guns again. */
+  private swapCd = 0;
   mode: Mode = 'plane';
   yaw = Math.random() * Math.PI * 2;
   character: Character;
@@ -122,7 +127,11 @@ export class Bot implements Combatant {
   private unstickDir = new Vector3();
   private healLeft = 0;
   /** Heals left: a couple to start with, and medkits they pick up. Nobody out-heals the storm forever. */
-  private heals = 2;
+  heals = 2;
+  /** Set for bosses (see Boss.ts): a giant guarding its home spot. */
+  boss: BossState | null = null;
+  /** Head hitbox radius (bosses have big heads). */
+  headR?: number;
   /** Seconds spent barely moving while trying to go somewhere. */
   private stuckLong = 0;
   private ignoreUntil = new Map<number, number>();
@@ -190,8 +199,42 @@ export class Bot implements Combatant {
     this.character.setGun(w);
   }
 
+  /** The weaker of the two slots (an empty slot is the weakest). */
+  private worstScore() {
+    return this.backup ? Math.min(weaponScore(this.weapon), weaponScore(this.backup)) : -Infinity;
+  }
+
+  /** Takes a gun into whichever slot is empty or weaker; the gun it replaces is thrown away. */
+  private takeGun(w: WeaponInstance) {
+    if (!this.backup) this.backup = w;
+    else if (weaponScore(this.backup) <= weaponScore(this.weapon)) this.backup = w;
+    else this.setWeapon(w);
+    // Hold the better of the two until a fight says otherwise.
+    if (weaponScore(this.backup!) > weaponScore(this.weapon)) this.swapGuns(0);
+  }
+
+  private swapGuns(delay = 0.4) {
+    if (!this.backup) return;
+    const old = this.weapon;
+    this.setWeapon(this.backup);
+    this.backup = old;
+    this.reloadLeft = 0;
+    this.burstLeft = 0;
+    this.sprayIdx = 0;
+    this.fireCd = Math.max(this.fireCd, delay);
+    this.swapCd = 1.5;
+  }
+
+  /** In a fight: out of ammo, or the other gun suits this range much better? Swap (faster than reloading). */
+  private pickGun(dist: number) {
+    if (!this.backup || this.swapCd > 0) return;
+    const fit = (w: WeaponInstance) => weaponScore(w) - Math.abs(Math.log(Math.max(1, dist) / w.def.botRange)) * 12 + (w.mag > 0 ? 0 : -100);
+    if (fit(this.backup) > fit(this.weapon) + 6) this.swapGuns();
+  }
+
   onDamaged(attacker: Combatant | null, _amount: number) {
     this.character.hit();
+    if (this.boss && attacker?.isPlayer) this.boss.hurtByYou = 0;
     this.healLeft = 0;
     if (this.dummy) return;
     if (attacker && attacker !== this && attacker.team !== this.team && (!this.target || !this.targetVisible)) {
@@ -377,6 +420,7 @@ export class Bot implements Combatant {
     }
 
     if (this.dummy) return this.updateDummy(dt, game);
+    if (this.boss) return this.updateBoss(dt, game);
 
     // AI level of detail: far-away bots think less often.
     this.thinkTimer -= dt;
@@ -573,6 +617,86 @@ export class Bot implements Combatant {
     this.tryPickup(game);
   }
 
+  /**
+   * A boss: patrols round its home, turns on anyone who comes close (or shoots it), chases only so
+   * far, and heals up again when it's left alone. No looting, cover, cars or ziplines.
+   */
+  private updateBoss(dt: number, game: Game) {
+    const b = this.body, S = this.boss!;
+    this.thinkTimer -= dt;
+    if (this.thinkTimer <= 0) {
+      this.thinkTimer = 0.25;
+      this.think(game);
+    }
+    if (this.reloadLeft > 0) {
+      this.reloadLeft -= dt;
+      if (this.reloadLeft <= 0) this.weapon.mag = magSize(this.weapon);
+    }
+    S.hurtByYou += dt;
+    const move = tmpA.set(0, 0, 0), fromHome = distXZ(b.pos, S.home);
+    let speed = P.walkSpeed * 0.85;
+    const t = this.target;
+    if (t && t.alive) {
+      S.calm = 0;
+      const to = tmpB.subVectors(this.targetVisible ? t.body.pos : this.lastKnown, b.pos);
+      to.y = 0;
+      const dist = to.length();
+      to.normalize();
+      this.yaw = turnToward(this.yaw, Math.atan2(-to.x, -to.z), 5 * dt);
+      if (this.targetVisible) {
+        if (this.strafeTimer <= 0) {
+          this.strafeDir = Math.random() < 0.5 ? -1 : 1;
+          this.strafeTimer = 1.5 + Math.random() * 1.5;
+        }
+        const pref = this.weapon.def.botRange * 0.8, approach = dist > pref ? 1 : dist < pref * 0.5 ? -0.5 : 0;
+        move.set(-to.z * this.strafeDir * 0.5, 0, to.x * this.strafeDir * 0.5).addScaledVector(to, approach);
+        this.tryFire(dt, game, t, dist);
+      } else if (fromHome < BOSS_LEASH) {
+        // Stomp over to where it last saw you.
+        this.steer(this.lastKnown, game, move);
+        speed = P.walkSpeed;
+        if (distXZ(this.lastKnown, b.pos) < 3) this.target = null;
+      } else this.target = null;
+    } else {
+      // Left alone: heal up and wander round home.
+      S.calm += dt;
+      if (S.calm > 5 && this.health < S.maxHealth) this.health = Math.min(S.maxHealth, this.health + S.maxHealth * 0.06 * dt);
+      if (!this.goal || this.goalTimer <= 0 || distXZ(this.goal, b.pos) < 1.5) {
+        const a = Math.random() * Math.PI * 2, r = 4 + Math.random() * 14;
+        this.goal = new Vector3(S.home.x + Math.cos(a) * r, 0, S.home.z + Math.sin(a) * r);
+        this.goalTimer = 5 + Math.random() * 4;
+      }
+      this.steer(this.goal, game, move);
+      speed = P.walkSpeed * 0.5;
+      if (move.lengthSq() > 0.01) this.yaw = turnToward(this.yaw, Math.atan2(-move.x, -move.z), 3 * dt);
+    }
+    // Never strays far from home.
+    if (fromHome > BOSS_LEASH) {
+      this.steer(S.home, game, move);
+      speed = P.walkSpeed;
+    }
+    if (move.lengthSq() > 0.0001) move.normalize().multiplyScalar(speed);
+    b.vel.x = damp(b.vel.x, move.x, 8, dt);
+    b.vel.z = damp(b.vel.z, move.z, 8, dt);
+    b.vel.y -= P.gravity * dt;
+    this.crouch = false;
+    b.height = P.standHeight * S.def.size;
+    moveBody(game.world, b, dt, P.stepHeight * 1.6);
+    // Wedged somewhere for a while (nobody watching): back home.
+    this.stuckTimer += dt;
+    if (this.stuckTimer > 1) {
+      this.stuckLong = move.lengthSq() > 1 && distXZ(this.lastPos, b.pos) < 1 ? this.stuckLong + this.stuckTimer : 0;
+      if (this.stuckLong > 5 && !this.targetVisible) {
+        b.pos.copy(S.home);
+        b.vel.set(0, 0, 0);
+        this.stuckLong = 0;
+        this.path = null;
+      }
+      this.stuckTimer = 0;
+      this.lastPos.copy(b.pos);
+    }
+  }
+
   private updateDummy(dt: number, game: Game) {
     const b = this.body;
     if (this.dummyStrafe) {
@@ -640,7 +764,7 @@ export class Bot implements Combatant {
   }
 
   private think(game: Game) {
-    if (Math.random() < 0.3) this.planZip(game);
+    if (!this.boss && Math.random() < 0.3) this.planZip(game);
     const eye = this.eye(tmpE);
     const B = CONFIG.bots;
     const range = B.visionRange * game.tuning.vision * game.visionMul;
@@ -654,16 +778,19 @@ export class Bot implements Combatant {
     if (this.blind <= 0) {
       for (const c of game.grid.query(eye.x, eye.z, range, nearby)) {
         if (c === this || !c.alive || c.team === this.team || !game.onFoot(c) || !game.canTarget(this, c)) continue;
+        // Bots leave bosses alone unless the boss started it; bosses only care about their patch.
+        if (c !== cur && (c as Bot).boss && !this.boss) continue;
+        if (this.boss && c !== cur && distXZ(c.body.pos, this.boss.home) > BOSS_LEASH + 40) continue;
         const dx = c.body.pos.x - eye.x, dz = c.body.pos.z - eye.z;
         const d = Math.hypot(dx, dz);
         // Bots on the enemy side mostly leave each other alone; your squad is always fair game.
         const casual = !isHuman(c) && !game.humanTeam(c.team) && !game.humanTeam(this.team) && !game.arena;
-        if (casual && c !== cur && !this.inGulag) {
+        if (casual && c !== cur && !this.inGulag && !this.boss) {
           if (d > B.botVsBotRange || this.groundTime < B.botLootTime) continue;
           const until = this.ignoreUntil.get(c.id);
           if (until !== undefined && game.matchTime < until) continue;
         }
-        const inFov = d < 12 || (dx * fwdX + dz * fwdZ) / (d || 1) > cosFov || c === cur;
+        const inFov = d < (this.boss ? 40 : 12) || (dx * fwdX + dz * fwdZ) / (d || 1) > cosFov || c === cur;
         if (!inFov || !game.canSee(eye, c)) continue;
         const score = d * (c === cur ? 0.6 : 1) * (isHuman(c) ? B.playerPreference : 1);
         if (score < bestD) {
@@ -673,7 +800,7 @@ export class Bot implements Combatant {
       }
     }
     const playerSide = (c: Combatant) => game.humanTeam(c.team);
-    if (best && !playerSide(best) && !playerSide(this) && best !== cur && !this.inGulag && !game.arena && Math.random() > B.botEngageChance) {
+    if (best && !this.boss && !playerSide(best) && !playerSide(this) && best !== cur && !this.inGulag && !game.arena && Math.random() > B.botEngageChance) {
       // Not worth the fight right now.
       this.ignoreUntil.set(best.id, game.matchTime + 25 + Math.random() * 20);
       best = null;
@@ -704,7 +831,7 @@ export class Bot implements Combatant {
     const t = this.target;
     if (t && !this.inGulag) {
       const hurt = this.health + this.armor < 90 || this.weapon.mag <= magSize(this.weapon) * 0.25;
-      if (!this.cover && this.targetVisible && hurt && Math.random() < game.tuning.cover * 0.5) {
+      if (!this.cover && !this.boss && this.targetVisible && hurt && Math.random() < game.tuning.cover * 0.5) {
         this.cover = this.findCover(game, t);
         if (this.cover) {
           this.coverTimer = 6 + Math.random() * 4;
@@ -777,13 +904,19 @@ export class Bot implements Combatant {
   }
 
   private tryFire(dt: number, game: Game, t: Combatant, dist: number) {
+    this.swapCd -= dt;
+    this.pickGun(dist);
     const w = this.weapon;
     this.updateAim(dt, t, dist);
     if (this.reaction > 0 || this.reloadLeft > 0 || this.fireCd > 0 || dist > w.def.range * 0.9 || this.blind > 0) return;
     if (this.inGulag && game.gulagPrep > 0) return;
     // Like a player: turn to face them first, and don't open fire until the crosshair is roughly on.
     const face = Math.atan2(-(t.body.pos.x - this.body.pos.x), -(t.body.pos.z - this.body.pos.z));
-    const turn = Math.abs(((face - this.yaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+    // Wrapped properly: yaw keeps counting past ±π as they turn, and % keeps the sign in JS.
+    let dYaw = (face - this.yaw) % (Math.PI * 2);
+    if (dYaw > Math.PI) dYaw -= Math.PI * 2;
+    else if (dYaw < -Math.PI) dYaw += Math.PI * 2;
+    const turn = Math.abs(dYaw);
     if (turn > 0.45) return;
     if (this.sprayIdx === 0 && this.aimOff.length() > 1 + dist * 0.012) return;
     if (w.mag <= 0) {
@@ -796,7 +929,8 @@ export class Bot implements Combatant {
     // Spinbot: the hitbox jerks around, most shots go wide.
     const dir = aim.sub(eye).normalize();
     const muzzle = this.character.root.localToWorld(tmpM.set(0.22, 1.25, -0.9));
-    for (let i = 0; i < w.def.pellets; i++) {
+    if (w.def.projectile) game.projectiles.fireRocket(tmpD.copy(muzzle), applySpread(dir, adsSpreadOf(w) * 2 + 0.01), this, w);
+    else for (let i = 0; i < w.def.pellets; i++) {
       const d = applySpread(tmpD.copy(dir), adsSpreadOf(w) * 1.5 + w.def.hipSpread * 0.15);
       game.fireShot(this, eye, d, w, muzzle);
     }
@@ -816,7 +950,8 @@ export class Bot implements Combatant {
       this.fireCd = this.burstLeft > 0 ? (60 / w.def.rpm) * 1.15 : 0.35 + Math.random() * 0.5;
     } else {
       this.sprayIdx = 0;
-      this.fireCd = 60 / w.def.rpm + 0.2 + Math.random() * 0.35;
+      // Launchers: a beat between rockets, so there's time to dodge.
+      this.fireCd = 60 / w.def.rpm + 0.2 + Math.random() * 0.35 + (w.def.projectile ? 1.1 : 0);
     }
     if (this.burstLeft <= 0) this.sprayIdx = 0;
     void dt;
@@ -882,7 +1017,7 @@ export class Bot implements Combatant {
       return;
     }
     const want = game.loot.nearest(b.pos, 45, (it) =>
-      (it.kind.type === 'weapon' && weaponScore(it.kind.weapon) > weaponScore(this.weapon)) ||
+      (it.kind.type === 'weapon' && weaponScore(it.kind.weapon) > this.worstScore() && it.kind.weapon.def.id !== this.weapon.def.id) ||
       (it.kind.type === 'plate' && this.armor < 100));
     if (want) {
       this.goal = want.pos.clone();
@@ -906,8 +1041,8 @@ export class Bot implements Combatant {
     const it = game.loot.nearest(this.body.pos, 1.4);
     if (!it) return;
     const k = it.kind;
-    if (k.type === 'weapon' && weaponScore(k.weapon) > weaponScore(this.weapon)) {
-      this.setWeapon(k.weapon);
+    if (k.type === 'weapon' && weaponScore(k.weapon) > this.worstScore() && k.weapon.def.id !== this.weapon.def.id) {
+      this.takeGun(k.weapon);
       game.loot.remove(it);
       this.goalTimer = 0;
     } else if (k.type === 'plate' && this.armor < 100) {
@@ -1071,6 +1206,7 @@ export class Bot implements Combatant {
   /** Brings a dead bot back (gulag opponents, practice dummies). */
   revive(game: Game, at: Vector3) {
     this.alive = true;
+    this.backup = null;
     this.health = 100;
     this.armor = 0;
     this.mode = 'ground';

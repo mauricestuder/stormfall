@@ -16,17 +16,21 @@ import { Menus } from '../ui/Menus';
 import { Prompts } from '../ui/Prompts';
 import { Touch } from '../ui/Touch';
 import { Vehicle, VEHICLE_SPECS, type VehicleKind } from '../vehicles/Vehicle';
-import { LootManager, lootLabel, randomAttachment, type LootKind } from '../weapons/Loot';
+import { LootManager, lootLabel, type LootKind } from '../weapons/Loot';
 import { PlayerWeapons } from '../weapons/PlayerWeapons';
 import { setViewCamo } from '../weapons/ViewModel';
 import {
   AMMO_INFO, ATT_KINDS, ATTACHMENTS, canAttach, damageFalloff, FISTS, makeWeapon, magSize, RARITIES, THROWABLES, WEAPON_IDS,
-  type AmmoType, type AttachmentKind, type WeaponId, type WeaponInstance,
+  type AmmoType, type WeaponId, type WeaponInstance,
 } from '../weapons/Weapon';
 import { Features } from '../world/Features';
 import { Tumbleweeds } from '../world/Tumbleweeds';
 import { Train, type Cargo } from '../world/Train';
-import { THEME } from '../theme';
+import { THEME, TOY } from '../theme';
+import { spawnBosses } from '../bots/Boss';
+
+/** Hit effects: blood, or (Toy Box) a puff of stuffing. */
+const BLOOD = TOY ? 0xf6f0e2 : 0xa01010;
 import { Destructibles, Doors, Glass, Ziplines } from '../world/Interactive';
 import { buildGlider, GLIDER_HEIGHT } from '../world/Glider';
 import { skinOf } from './Skins';
@@ -41,6 +45,9 @@ import type { ArenaKind, BotEntry, DMKind, LootLayout, Net, RosterEntry } from '
 import { Plane } from './DropPhase';
 import { Environment } from './Environment';
 import { Killcam } from './Killcam';
+import { DEATH_CAM_MS, DeathCam } from './DeathCam';
+import { LoadScreen, type LoadInfo } from '../ui/LoadScreen';
+import { setBodyStyle } from '../bots/Character';
 import { Music, type SongName } from './Music';
 import { Particles } from './Particles';
 import { PostFx } from './PostFx';
@@ -104,6 +111,8 @@ export class Game {
   postFx: PostFx | null = null;
   private inkSky: InkSky | null = null;
   killcam!: Killcam;
+  deathCam!: DeathCam;
+  loadScreen = new LoadScreen();
   touch: Touch | null = null;
   vehicles: Vehicle[] = [];
   /** The vehicle the player is driving, if any. */
@@ -277,6 +286,7 @@ export class Game {
     this.cheats = new Cheats(this);
     this.env = new Environment(this.scene, this.camera, this.sun, this.hemi, this.fog, this.sfx);
     this.killcam = new Killcam(this);
+    this.deathCam = new DeathCam(this);
     this.hud = new Hud(this);
     this.lobby = new Lobby(this);
     // Cars and doors went in after the loot: move anything they landed on.
@@ -307,7 +317,6 @@ export class Game {
     this.input.onLockChange = (locked) => {
       if (!locked && this.state === 'playing' && !this.touchActive && !this.hud.invOpen) this.pause();
     };
-    this.hud.onDetach = (slot, att, move) => this.detachAttachment(slot, att, move);
     this.hud.onSwapSlots = () => this.swapSlots();
     this.hud.onInventoryClose = () => this.toggleInventory(false);
     addEventListener('keydown', (e) => {
@@ -345,6 +354,12 @@ export class Game {
   }
 
   applySettings(s: SettingsData) {
+    if (THEME === 'world' && (s.world === 'classic') === TOY) {
+      // The world is built at startup: switching it means starting over (only from the menus).
+      if (this.state === 'title') setTimeout(() => location.reload(), 150);
+      else this.hud.pickupToast('The new world loads next time you start the game', '#ffd24a');
+    }
+    setBodyStyle(s.bodyStyle);
     this.sensitivity = s.sensitivity;
     this.player.autoSprint = s.autoSprint;
     this.player.toggleCrouch = s.toggleCrouch;
@@ -420,6 +435,8 @@ export class Game {
     const s = this.settings.data;
     this.tuning = adaptTuning(DIFFICULTY[s.botDifficulty], this.profile.data.adapt);
     this.bots.spawnAll(this, Math.max(1, Math.round(s.botCount)), s.squadSize);
+    // Bosses wait at a few big towns, each guarding a Mythic gun.
+    this.bots.bots.push(...spawnBosses(this, 5000));
     this.combatants = [this.player, ...this.bots.bots];
     this.teamsAtStart = this.aliveTeams(-1).size;
     setViewCamo(this.profile.camoColor);
@@ -433,7 +450,7 @@ export class Game {
   private applyLook() {
     this.zone.setDark(this.env.isNight);
     this.postFx?.setLook(this.env.tod, this.env.wx);
-    (this.map.sea.material as MeshLambertMaterial).color.setHex(this.env.isNight ? 0x163a5c : 0x2f8fcf);
+    (this.map.sea.material as MeshLambertMaterial).color.setHex(TOY ? (this.env.isNight ? 0x4a5a80 : 0xffffff) : this.env.isNight ? 0x163a5c : 0x2f8fcf);
   }
 
   private gliderKey = '';
@@ -454,16 +471,64 @@ export class Game {
     }
   }
 
+  /** The loading card's text for a match. */
+  private loadInfo(mode: string, sub: string): LoadInfo {
+    return { mode, sub, map: this.map.mapCanvas };
+  }
+
+  /** Shows the loading screen, grabbing the mouse while we still have the click, then runs `work`. */
+  private withLoading(info: LoadInfo, work: () => void, now = false) {
+    if (this.loadScreen.busy) return;
+    this.sfx.unlock();
+    if (!this.touchActive) this.input.lock();
+    this.loadScreen.run(info, () => {
+      work();
+      // Compile the scene's shaders now, behind the card, not on the first frame of the match.
+      try {
+        this.renderer.compile(this.scene, this.camera);
+        this.prerenderIsland();
+      } catch { /* not essential */ }
+    }, { now, minMs: now ? 1300 : 1900 });
+  }
+
+  /**
+   * Draws the whole island once, from high above, behind the loading card: every chunk's mesh gets
+   * uploaded to the GPU now, so flying over the map in the plane doesn't hitch or pop.
+   */
+  private prerenderIsland() {
+    if (this.arena) return;
+    const cam = new PerspectiveCamera(90, 1, 5, 8000);
+    cam.position.set(0, 1800, 0.01);
+    cam.lookAt(0, 0, 0);
+    cam.updateMatrixWorld();
+    this.map.cull(cam.position, 99999, 1, true);
+    const fogFar = this.fog.far;
+    this.fog.far = 99999;
+    this.renderer.render(this.scene, cam);
+    this.fog.far = fogFar;
+  }
+
   /** PLAY button. */
   play() {
+    const s = this.settings.data, squad = ['SOLOS', 'DUOS', 'TRIOS', 'QUADS'][s.squadSize - 1] ?? 'SOLOS';
+    this.withLoading(this.loadInfo('BATTLE ROYALE', `${squad} · ${Math.round(s.botCount) + 1} PLAYERS · ${s.botDifficulty.toUpperCase()} BOTS`), () => this.playNow());
+  }
+
+  private playNow() {
     this.setupMatch();
     this.begin();
     this.hud.announce('GET READY TO DROP', 3);
+    const bosses = this.bots.bots.filter((b) => b.boss).length;
+    if (bosses) setTimeout(() => this.hud.pickupToast(`${bosses} bosses guard Mythic guns — look for the crowns on the map`, '#ff5ad8'), 5000);
     if (this.env.isNight) setTimeout(() => this.hud.pickupToast('Night drop — press L for your flashlight', '#ffd24a'), 3500);
   }
 
   /** PRACTICE button: the airport runway with target dummies and every gun. */
   practice() {
+    this.withLoading(this.loadInfo('PRACTICE RANGE', 'EVERY GUN · TARGET DUMMIES'), () => this.practiceNow());
+  }
+
+  private practiceNow() {
     this.practiceMode = true;
     this.applySkin();
     this.setupPractice();
@@ -476,6 +541,11 @@ export class Game {
    * `roster` is the human players (just you offline); `bots` fill the rest.
    */
   startArena(kind: DMKind, net: Net | null, roster: RosterEntry[], bots: BotEntry[] | null, look?: { tod: string; wx: string }) {
+    const info: LoadInfo = { mode: kind === 'tdm' ? 'TEAM DEATHMATCH' : 'FREE-FOR-ALL', sub: net ? 'ONLINE · THE FOUNDRY' : 'VS BOTS · THE FOUNDRY' };
+    this.withLoading(info, () => this.startArenaNow(kind, net, roster, bots, look), !!net);
+  }
+
+  private startArenaNow(kind: DMKind, net: Net | null, roster: RosterEntry[], bots: BotEntry[] | null, look?: { tod: string; wx: string }) {
     const s = this.settings.data;
     this.tuning = DIFFICULTY[s.botDifficulty];
     this.arena = new Arena(this, kind, net);
@@ -576,6 +646,11 @@ export class Game {
    * layout, the plane and circles come from `seed`); each player flies themselves, the host flies the bots.
    */
   startOnlineBR(kind: ArenaKind, net: Net, roster: RosterEntry[], bots: BotEntry[], look: { tod: string; wx: string }, seed: number, loot: LootLayout | null) {
+    const info = this.loadInfo('BATTLE ROYALE', `ONLINE · ${kind === 'brs' ? 'SQUADS' : 'SOLO'} · ${roster.length + bots.length} PLAYERS`);
+    this.withLoading(info, () => this.startOnlineBRNow(kind, net, roster, bots, look, seed, loot), true);
+  }
+
+  private startOnlineBRNow(kind: ArenaKind, net: Net, roster: RosterEntry[], bots: BotEntry[], look: { tod: string; wx: string }, seed: number, loot: LootLayout | null) {
     const s = this.settings.data;
     this.tuning = DIFFICULTY[s.botDifficulty];
     if (loot) unpackLoot(this, loot);
@@ -622,6 +697,7 @@ export class Game {
   }
 
   private begin() {
+    this.deathCam.stop();
     this.sfx.unlock();
     this.input.lock();
     this.lockAskFrame = this.frameNo + 20;
@@ -648,33 +724,6 @@ export class Game {
     p.slots = [p.slots[1], p.slots[0]];
     p.active = 1 - p.active;
     this.sfx.swap();
-  }
-
-  /** Takes an attachment off a gun: drops it at your feet, or moves it to your other gun. */
-  private detachAttachment(slot: number, att: AttachmentKind, move: boolean) {
-    const p = this.player, w = p.slots[slot];
-    if (!w || !w.att[att]) return;
-    w.att[att] = false;
-    // Rounds that only fit the extended mag go back into your reserve.
-    const extra = w.mag - magSize(w);
-    if (extra > 0) {
-      p.ammo[w.def.ammo] += extra;
-      w.mag = magSize(w);
-    }
-    const info = ATTACHMENTS[att], color = '#' + info.color.toString(16).padStart(6, '0');
-    const other = p.slots[1 - slot];
-    if (move && other && canAttach(other.def, att) && !other.att[att]) {
-      other.att[att] = true;
-      this.hud.pickupToast(`${info.name} moved to ${other.def.name}`, color);
-    } else {
-      const at = p.body.pos.clone();
-      at.x -= Math.sin(p.yaw) * 1.2;
-      at.z -= Math.cos(p.yaw) * 1.2;
-      at.y = p.body.onGround ? p.body.pos.y : this.map.groundAt(at.x, at.z);
-      this.loot.spawn({ type: 'attachment', att }, at);
-      this.hud.pickupToast(`${info.name} dropped`, color);
-    }
-    this.sfx.pickup();
   }
 
   pause() {
@@ -741,6 +790,10 @@ export class Game {
       const w = this.player.weapon;
       const scoped = w && (w.def.id === 'sniper' || w.att.scope);
       const adsMul = lerp(1, s.adsSensitivity * (scoped ? 0.6 : 1), this.weapons.adsAmount);
+      if (this.weapons.wheel.open) {
+        this.weapons.wheelLook(m.x, m.y);
+        m.x = m.y = 0;
+      }
       this.player.look(m.x, s.invertY ? -m.y : m.y, this.sensitivity * adsMul);
       this.mouseIdle = m.x !== 0 || m.y !== 0 ? 0 : this.mouseIdle + dt;
       this.weapons.view.addLook(m.x, s.invertY ? -m.y : m.y);
@@ -784,7 +837,8 @@ export class Game {
       this.tumbleweeds.visible = this.state !== 'title' && !this.arena;
       this.tumbleweeds.update(dt, cam);
     }
-    this.map.cull(cam, this.fog.far, this.detailMul);
+    const pm = this.player.mode;
+    this.map.cull(cam, this.fog.far, this.detailMul, this.state !== 'title' && !this.arena && (pm === 'plane' || pm === 'freefall' || pm === 'glide'));
     if (this.state !== 'title') this.hud.update(dt);
     this.updateDynRes(dt);
     this.renderer.toneMappingExposure = this.env.exposure * this.settings.data.brightness;
@@ -1054,7 +1108,7 @@ export class Game {
     if (this.zoneTick < 1) return;
     this.zoneTick -= 1;
     for (const c of this.combatants) {
-      if (!c.alive || !this.inWorld(c) || this.inArena(c)) continue;
+      if (!c.alive || !this.inWorld(c) || this.inArena(c) || (c as Bot).boss) continue;
       if (this.zone.isOutside(c.body.pos.x, c.body.pos.z)) {
         if (!this.owns(c) || (c.isPlayer && cheatOn('god'))) continue;
         const res = applyDamage(c, this.zone.dps, true);
@@ -1104,10 +1158,9 @@ export class Game {
     p.slots = [makeWeapon('ar', RARITIES[2]), makeWeapon('shotgun', RARITIES[1])];
     for (const k of Object.keys(p.ammo) as (keyof typeof p.ammo)[]) p.ammo[k] = AMMO_INFO[k].max;
     p.throwables = { frag: 3, smoke: 3, flash: 3, grapple: 3 };
-    // A weapon rack of everything, in every rarity, plus attachments.
+    // A weapon rack of everything, in every rarity.
     const rack: LootKind[] = WEAPON_IDS.map((id) => ({ type: 'weapon', weapon: makeWeapon(id, RARITIES[Math.min(3, 1 + (WEAPON_IDS.indexOf(id) % 3))]) }));
     rack.forEach((k, i) => this.loot.spawn(k, new Vector3(at.x - 9 + i * 2, this.map.groundAt(at.x - 9 + i * 2, at.z + 4) + 0.1, at.z + 4)));
-    for (let i = 0; i < 6; i++) this.loot.spawn(i < 4 ? { type: 'attachment', att: ATT_KINDS[i] } : randomAttachment(), new Vector3(at.x - 5 + i * 2, this.map.groundAt(at.x, at.z + 7) + 0.1, at.z + 7));
     // Dummies at 10–80 m, some strafing.
     let id = 1;
     for (const [dist, strafe] of [[10, 0], [18, 0], [25, 3], [35, 0], [45, 4], [60, 0], [80, 3], [30, 6]] as [number, number][]) {
@@ -1158,7 +1211,7 @@ export class Game {
   private tryGulag(): boolean {
     if (this.practiceMode || this.gulagUsed || this.zone.phase > 2) return false;
     // Fight someone who's already dead; if nobody is yet, the Warden steps in.
-    let foe = this.bots.bots.find((b) => !b.alive && !b.followPlayer && !b.dummy);
+    let foe = this.bots.bots.find((b) => !b.alive && !b.followPlayer && !b.dummy && !b.boss);
     if (!foe) {
       foe = new Bot(900 + this.bots.bots.length, 'The Warden', this, 0.02, 0xff3b30);
       foe.team = 999;
@@ -1176,7 +1229,7 @@ export class Game {
     this.gulagName = this.map.gulagNames[arena];
     const p = this.player, g = this.map.gulag;
     p.frozen = true;
-    this.hud.fadeFromBlack(1.2, 1);
+    this.hud.fadeFromBlack(0.35, 0.7);
     if (this.driving) this.exitVehicle();
     p.alive = true;
     p.health = 100;
@@ -1432,7 +1485,7 @@ export class Game {
       // Solid walls between you and the blast soak most of it.
       const dir = tmpDir.subVectors(tmpEnd, pos).divideScalar(Math.max(d, 0.01));
       const cover = d > 1 && this.world.raycast(pos, dir, d) < d - 0.3 ? 0.25 : 1;
-      const dmg = damage * (1 - d / radius) * cover * (c.isPlayer && this.driving ? 0.5 : 1);
+      const dmg = damage * (1 - d / radius) * cover * (c.isPlayer && this.driving ? 0.5 : 1) * (by instanceof Bot && by.boss ? by.boss.def.dmgMul : 1);
       if (dmg < 1) continue;
       const res = applyDamage(c, dmg);
       c.onDamaged(by, dmg);
@@ -1492,6 +1545,7 @@ export class Game {
 
   private syncCamera(dt: number) {
     const p = this.player, cam = this.camera;
+    if (this.deathCam.active && p.alive) this.deathCam.stop();
     if (this.lobby?.active) {
       // Menus: the camera frames your character on their podium out on the island.
       this.lobby.update(dt, cam);
@@ -1513,6 +1567,8 @@ export class Game {
         target.z + Math.cos(p.yaw) * cp * dist,
       );
       cam.lookAt(target);
+    } else if (this.deathCam.active && !p.alive) {
+      this.deathCam.update(dt, cam);
     } else if (this.driving) {
       // Chase camera: free-look with the mouse, drifts back behind the car when you let go.
       const v = this.driving;
@@ -1554,7 +1610,7 @@ export class Game {
       else if (p.sprinting) fov += CONFIG.player.sprintFov;
       const w = p.weapon;
       if (w && (p.mode === 'ground' || p.mode === 'zipline')) {
-        const adsFov = w.def.adsFov * (w.att.scope && w.def.id !== 'sniper' ? 0.7 : 1);
+        const adsFov = w.def.adsFov;
         fov = lerp(fov, adsFov * (this.settings.data.fov / 90), this.weapons.adsAmount);
       }
       cam.fov = damp(cam.fov, fov, 12, dt);
@@ -1590,14 +1646,14 @@ export class Game {
   /** Everyone still in the match (the gulag opponent doesn't count). */
   get aliveCount() {
     let n = 0;
-    for (const c of this.combatants) if (c.alive && !(c instanceof Bot && (c.inGulag || c.dummy))) n++;
+    for (const c of this.combatants) if (c.alive && !(c instanceof Bot && (c.inGulag || c.dummy || c.boss))) n++;
     return n;
   }
 
   /** Teams with someone alive, not counting `except`. */
   private aliveTeams(except = -1) {
     const teams = new Set<number>();
-    for (const c of this.combatants) if ((c.alive || this.redeploying.has(c)) && c.team !== except && !(c instanceof Bot && (c.inGulag || c.dummy))) teams.add(c.team);
+    for (const c of this.combatants) if ((c.alive || this.redeploying.has(c)) && c.team !== except && !(c instanceof Bot && (c.inGulag || c.dummy || c.boss))) teams.add(c.team);
     return teams;
   }
 
@@ -1663,7 +1719,9 @@ export class Game {
     const nm = this.netm;
     if (first && !melee && nm && nm.owns(shooter)) nm.sendShot(shooter, def.id, muzzle, end);
     if (near && !melee) {
-      this.fx.tracer(muzzle, end, byPlayer ? 0xffe08a : 0xff8a5a, byPlayer ? 0.02 : 0.035);
+      // Toy Box: chunky foam darts instead of thin tracers.
+      if (TOY) this.fx.tracer(muzzle, end, byPlayer ? 0xff8a1a : 0x5ad1ff, byPlayer ? 0.035 : 0.05, 0.09);
+      else this.fx.tracer(muzzle, end, byPlayer ? 0xffe08a : 0xff8a5a, byPlayer ? 0.02 : 0.035);
       // Everyone else's guns flash too, so you can see who's shooting (the first pellet is enough).
       if (!byPlayer && first) {
         this.fx.flash(muzzle, 0xffc860, def.pellets > 1 || def.id === 'sniper' ? 0.32 : 0.2);
@@ -1697,7 +1755,7 @@ export class Game {
       let dmg = dmg0 * (head ? def.headMult : 1);
       if (this.obr && !shooter.isPlayer && hitC instanceof Bot && hitC.human) dmg *= this.tuning.damage;
       if (!protectedNow) this.netm?.sendDamage(shooter, hitC, dmg, head);
-      if (near) this.fx.burst(end, protectedNow ? 0xffffff : 0xa01010, 6, { speed: 3, size: 0.08, life: 0.35, gravity: 14, dir: tmpDir.copy(dir) });
+      if (near) this.fx.burst(end, protectedNow ? 0xffffff : BLOOD, 6, { speed: 3, size: 0.08, life: 0.35, gravity: 14, dir: tmpDir.copy(dir) });
       if (byPlayer && !protectedNow) {
         this.stats.hits++;
         this.stats.damage += dmg;
@@ -1710,13 +1768,14 @@ export class Game {
       const botOnBot = !this.arena && !shooter.isPlayer && !hitC.isPlayer && shooter.team !== this.player.team && hitC.team !== this.player.team;
       let dmg = dmg0 * (head ? def.headMult : 1) * (botOnBot ? CONFIG.bots.botVsBotDamage : 1);
       if (!shooter.isPlayer && hitC.team === this.player.team) dmg *= this.tuning.damage;
+      if (shooter instanceof Bot && shooter.boss) dmg *= shooter.boss.def.dmgMul;
       const res = applyDamage(hitC, dmg);
       hitC.onDamaged(shooter, dmg);
       if (hitC instanceof Bot) hitC.lastHitDir.copy(dir);
       // Blood for flesh, blue sparks off armor.
       if (near) {
         if (res.toArmor > 0) this.fx.burst(end, 0x5ab4ff, 8, { speed: 5, size: 0.06, life: 0.25, dir: tmpDir.copy(dir).negate() });
-        if (res.toHealth > 0) this.fx.burst(end, 0xa01010, 7, { speed: 3, size: 0.09, life: 0.4, gravity: 14, dir: tmpDir.copy(dir) });
+        if (res.toHealth > 0) this.fx.burst(end, BLOOD, 7, { speed: 3, size: 0.09, life: 0.4, gravity: 14, dir: tmpDir.copy(dir) });
       }
       if (byPlayer) {
         this.stats.hits++;
@@ -1786,6 +1845,7 @@ export class Game {
     const kname = killer?.name ?? how ?? 'The Storm';
     this.hud.killfeed(kname, victim.name, w ? w.def.name : killer ? how ?? null : null, involvesMe);
     if (killer?.isPlayer && head) this.stats.headshotKills++;
+    if (victim.isPlayer) this.startDeathCam(killer);
     if (this.arena) return this.arenaKill(killer, victim, w, how, head);
     const redeploy = victim.isPlayer && !!this.obr && !this.redeployUsed;
     this.obr?.onKill(killer, victim, w ? w.def.id : null, head, how, redeploy);
@@ -1804,6 +1864,15 @@ export class Game {
         return;
       }
       if (this.owns(victim)) this.dropLoot(victim, killer?.isPlayer ? w : null);
+      if (victim.boss) {
+        this.hud.announce(`${victim.name.toUpperCase()} DEFEATED`, 3);
+        this.hud.pickupToast(`Mythic ${victim.weapon.def.name} dropped!`, '#ff5ad8');
+        if (killer?.isPlayer) {
+          this.sfx.kill();
+          this.sfx.streak(3);
+        }
+        return;
+      }
       if (killer?.isPlayer) {
         this.sfx.kill();
         if (this.player.alive && !this.gulagFight) {
@@ -1826,7 +1895,8 @@ export class Game {
       this.weapons.reset();
       if (this.practiceMode) return this.respawnPractice();
       if (redeploy) return this.redeployOnline();
-      if (this.gulagFight) {
+      const lostGulag = this.gulagFight;
+      if (lostGulag) {
         // Lost the gulag: that's it.
         this.gulagFight = false;
         const foe = this.gulagFoe;
@@ -1836,9 +1906,16 @@ export class Game {
           this.scene.remove(foe.mesh);
           this.gulagFoe = null;
         }
-      } else if (this.tryGulag()) return;
+      }
       const placement = this.aliveTeams(this.player.team).size + 1;
-      this.finalDeath(killer, placement);
+      // A moment looking at your body first, then the Gulag or the killcam.
+      const next = () => {
+        if (this.state === 'paused') return void setTimeout(next, 200);
+        if (this.state !== 'playing' || this.player.alive) return;
+        if (!lostGulag && this.tryGulag()) return;
+        this.finalDeath(killer, placement);
+      };
+      setTimeout(next, DEATH_CAM_MS);
     } else if (this.player.alive && !this.practiceMode) {
       const others = this.aliveTeams(this.player.team);
       if (others.size === 0) this.endMatch(true, 1, null);
@@ -1888,9 +1965,16 @@ export class Game {
       ...[...ammo].map(([t, amount]): LootKind => ({ type: 'ammo', ammo: t, amount })),
       { type: 'plate', count: Math.max(1, 1 + victim.plates) },
     ];
+    const bw = victim.backup;
+    if (bw) pile.push({ type: 'weapon', weapon: { ...bw, att: { ...bw.att }, mag: magSize(bw) } });
     if (Math.random() < 0.5) pile.push({ type: 'medkit', count: 1 });
     if (victim.frags > 0) pile.push({ type: 'throwable', t: 'frag', count: victim.frags });
     if (victim.smokes > 0) pile.push({ type: 'throwable', t: 'smoke', count: victim.smokes });
+    if (victim.boss) {
+      // A boss's hoard: its Mythic gun plus a full refit.
+      const t = vw.def.ammo;
+      pile.push({ type: 'ammo', ammo: t, amount: AMMO_INFO[t].max }, { type: 'plate', count: 3 }, { type: 'medkit', count: 2 }, { type: 'throwable', t: 'frag', count: 2 });
+    }
     this.loot.spawnPile(pile, this.floorBelow(victim.body.pos));
   }
 
@@ -2012,8 +2096,7 @@ export class Game {
         { type: 'ammo', ammo: w.def.ammo, amount: AMMO_INFO[w.def.ammo].pickup * 2 },
         { type: 'plate', count: express ? 3 : 2 },
       ];
-      if (express) pile.push({ type: 'medkit', count: 2 }, { type: 'throwable', t: 'grapple', count: 3 }, randomAttachment());
-      else if (Math.random() < 0.5) pile.push(randomAttachment());
+      if (express) pile.push({ type: 'medkit', count: 2 });
       for (const it of this.loot.spawnPile(pile, at)) it.pos.y = at.y;
     });
   }
@@ -2053,6 +2136,15 @@ export class Game {
     }, 1500);
   }
 
+  /** Starts the death cam over your body (skipped if you died high in the air). */
+  private startDeathCam(killer: Combatant | null) {
+    const p = this.player;
+    if (p.mode === 'plane' || p.mode === 'freefall' || p.mode === 'glide') return;
+    const ground = this.floorBelow(p.body.pos);
+    if (p.body.pos.y - ground.y > 8) return;
+    this.deathCam.start(this.camera.position, p.yaw, p.pitch, ground, killer && killer !== p ? killer.body.pos : null);
+  }
+
   private finalDeath(killer: Combatant | null, placement: number) {
     this.sfx.setEngine(null);
     this.sfx.setAir(null);
@@ -2064,9 +2156,11 @@ export class Game {
     this.touch?.show(false);
     // Watch the kill from their side first.
     setTimeout(() => {
-      if (this.killcam.play(killer, this.matchTime, () => show())) this.hud.killcamBanner(this.killcam.killerName);
-      else show();
-    }, 900);
+      if (this.killcam.play(killer, this.matchTime, () => show())) {
+        this.deathCam.stop();
+        this.hud.killcamBanner(this.killcam.killerName);
+      } else show();
+    }, 150);
   }
 
   private endMatch(won: boolean, placement: number, killer: string | null) {
@@ -2332,7 +2426,7 @@ export class Game {
     }
     if (it.kind.type !== 'weapon') return;
     const w = it.kind.weapon;
-    const extras = ATT_KINDS.filter((a) => w.att[a]).map((a) => ATTACHMENTS[a].name).join(', ');
+    const extras = ATT_KINDS.filter((a) => a !== 'scope' && w.att[a]).map((a) => ATTACHMENTS[a].name).join(', ');
     this.pickupPrompt = `<kbd>F</kbd> <span style="color:${w.rarity.css}">${lootLabel(it.kind)}</span>${extras ? ` <small>+ ${extras}</small>` : ''}`;
     if (!this.input.pressed('KeyF')) return;
     const empty = p.slots.findIndex((s) => s === null);

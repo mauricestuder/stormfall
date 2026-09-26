@@ -1,4 +1,5 @@
 import { BoxGeometry, CylinderGeometry, Group, Mesh, MeshLambertMaterial } from 'three';
+import { TOY } from '../theme';
 
 export type AmmoType = 'light' | 'heavy' | 'shells' | 'sniper' | 'rocket';
 
@@ -54,6 +55,8 @@ export interface WeaponDef {
   botRange: number; // distance bots like to fight at
   modelLength: number;
   bodyColor: number;
+  /** A boss's one-of-a-kind gun (Mythic rarity). */
+  mythic?: boolean;
 }
 
 const pat = (climb: number, late: number, yawBias: number, yawAmp: number, yawFreq: number, yawPhase = 0): RecoilPattern =>
@@ -132,6 +135,16 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
   },
 };
 
+// Toy Box: every gun is a brightly coloured foam blaster.
+if (TOY) {
+  const toy: Record<WeaponId, [string, number]> = {
+    pistol: ['Dart Pistol', 0x2a7de1], revolver: ['Cap Gun', 0xe8392b], smg: ['Foam SMG', 0x2fb84a], burst: ['Triple-Dart Rifle', 0x8b3fe0],
+    ar: ['Foam Blaster AR', 0x2a7de1], lmg: ['Drum Blaster', 0xf5c518], shotgun: ['Splatter Shotgun', 0xff7a1a], dmr: ['Rubber-Band DMR', 0x14b8a6],
+    sniper: ['Suction-Cup Sniper', 0xe83e8c], rocket: ['Bottle Rocket', 0xf5c518],
+  };
+  for (const id of Object.keys(toy) as WeaponId[]) [WEAPONS[id].name, WEAPONS[id].bodyColor] = toy[id];
+}
+
 export const WEAPON_IDS = Object.keys(WEAPONS) as WeaponId[];
 
 export interface Rarity {
@@ -149,12 +162,50 @@ export const RARITIES: Rarity[] = [
   { name: 'Legendary', color: 0xffb020, css: '#ffc043', mult: 1.25, tier: 3 },
 ];
 
+/** Only bosses carry these: better than gold. */
+export const MYTHIC: Rarity = { name: 'Mythic', color: 0xff3fd0, css: '#ff5ad8', mult: 1.3, tier: 4 };
+
+/**
+ * The bosses' guns: each one a souped-up version of a normal gun (same model and ammo, much better stats).
+ */
+export type MythicId = 'stuffing' | 'windup' | 'marble' | 'cork';
+export const MYTHICS: Record<MythicId, WeaponDef> = {
+  // Big Ted: a fully automatic shotgun that fires clouds of stuffing.
+  stuffing: {
+    ...WEAPONS.shotgun, name: 'Stuffing Cannon', mythic: true, tier: 5, auto: true, rpm: 210, mag: 12, reload: 2.4, damage: 12, pellets: 11,
+    hipSpread: 0.06, adsSpread: 0.045, falloffEnd: 34, falloffMin: 0.35, bodyColor: 0x8a5a3a,
+  },
+  // Mecha-Max: a wind-up minigun with a drum you never seem to empty.
+  windup: {
+    ...WEAPONS.lmg, name: 'Wind-Up Minigun', mythic: true, tier: 5, rpm: 1050, mag: 150, reload: 4.0, damage: 19, hipSpread: 0.04, adsSpread: 0.006,
+    bloomPerShot: 0.002, maxBloom: 0.035, recoil: 0.006, bodyColor: 0xc0c6ce,
+  },
+  // Sergeant Plastic: a marble launcher, four rockets to a load.
+  marble: {
+    ...WEAPONS.rocket, name: 'Marble Mortar', mythic: true, tier: 5, rpm: 150, mag: 4, reload: 2.6, damage: 110, projectile: { speed: 75, radius: 7 },
+    bodyColor: 0x4f7a2a,
+  },
+  // Jack: a cork-popping sniper that fires as fast as a DMR.
+  cork: {
+    ...WEAPONS.sniper, name: 'Champagne Cork Sniper', mythic: true, tier: 5, rpm: 95, mag: 8, reload: 2.2, damage: 125, headMult: 2.2, recoil: 0.04,
+    bodyColor: 0xff3fd0,
+  },
+};
+
+/** A boss's mythic gun, fully kitted. */
+export function makeMythic(id: MythicId): WeaponInstance {
+  const def = MYTHICS[id];
+  const w: WeaponInstance = { def, rarity: MYTHIC, mag: def.mag, att: rarityAttachments(def, MYTHIC) };
+  w.mag = magSize(w);
+  return w;
+}
+
 // ---- Attachments ----
 
 export type AttachmentKind = 'scope' | 'extmag' | 'grip' | 'muzzle';
 export const ATT_KINDS: AttachmentKind[] = ['scope', 'extmag', 'grip', 'muzzle'];
 export const ATTACHMENTS: Record<AttachmentKind, { name: string; color: number; desc: string }> = {
-  scope: { name: '2x Scope', color: 0x5ad1ff, desc: 'Tighter zoom and aim' },
+  scope: { name: 'Built-in Optic', color: 0x5ad1ff, desc: 'Part of the gun' },
   extmag: { name: 'Extended Mag', color: 0xffb13b, desc: '+50% magazine' },
   grip: { name: 'Vertical Grip', color: 0x8cff6a, desc: '-30% recoil' },
   muzzle: { name: 'Compensator', color: 0xff6ad5, desc: '-25% recoil' },
@@ -175,11 +226,26 @@ export interface WeaponInstance {
   att: Record<AttachmentKind, boolean>;
 }
 
+/** Guns that come with their own optic built in (the sniper and DMR have theirs modelled already). */
+const BUILT_IN_SCOPE: WeaponId[] = ['ar', 'burst', 'lmg'];
+
+/**
+ * Attachments aren't looted any more: a gun's rarity decides its kit. Common (grey) has none,
+ * Rare adds a compensator, Epic a grip as well, Legendary (gold) is fully kitted with an extended mag.
+ */
+export function rarityAttachments(def: WeaponDef, rarity: Rarity): Record<AttachmentKind, boolean> {
+  const t = rarity.tier;
+  return {
+    scope: BUILT_IN_SCOPE.includes(def.id),
+    muzzle: t >= 1 && canAttach(def, 'muzzle'),
+    grip: t >= 2 && canAttach(def, 'grip'),
+    extmag: t >= 3 && canAttach(def, 'extmag'),
+  };
+}
+
 export function makeWeapon(id: WeaponId, rarity: Rarity = RARITIES[0]): WeaponInstance {
   const def = WEAPONS[id];
-  const w: WeaponInstance = { def, rarity, mag: def.mag, att: { scope: false, extmag: false, grip: false, muzzle: false } };
-  // Better guns sometimes come kitted out.
-  if (rarity.tier >= 2) for (const k of ATT_KINDS) if (canAttach(def, k) && Math.random() < rarity.tier * 0.22) w.att[k] = true;
+  const w: WeaponInstance = { def, rarity, mag: def.mag, att: rarityAttachments(def, rarity) };
   w.mag = magSize(w);
   return w;
 }
@@ -190,8 +256,8 @@ export const recoilMul = (w: WeaponInstance) => (w.att.grip ? 0.7 : 1) * (w.att.
 export const attKey = (w: WeaponInstance) => ATT_KINDS.map((k) => +w.att[k]).join('');
 /** Overall recoil strength: a touch more kick than the raw numbers, which attachments tame. */
 const RECOIL_SCALE = 1.6;
-export const adsFovOf = (w: WeaponInstance) => w.def.adsFov * (w.att.scope ? 0.7 : 1);
-export const adsSpreadOf = (w: WeaponInstance) => w.def.adsSpread * (w.att.scope ? 0.7 : 1);
+export const adsFovOf = (w: WeaponInstance) => w.def.adsFov;
+export const adsSpreadOf = (w: WeaponInstance) => w.def.adsSpread;
 
 /** Per-shot camera kick for the i-th shot of a spray: [pitch, yaw] in radians. */
 export function recoilKick(w: WeaponInstance, i: number): [number, number] {
@@ -223,9 +289,9 @@ export function randomWeaponId(rng: () => number = Math.random): WeaponId {
   return 'ar';
 }
 
-/** How much a bot wants this gun. Bots don't carry rocket launchers. */
+/** How much a bot wants this gun. Bots don't carry rocket launchers (bosses bring their own). */
 export function weaponScore(w: WeaponInstance | null) {
-  if (!w || w.def.id === 'rocket') return -1;
+  if (!w || (w.def.id === 'rocket' && !w.def.mythic)) return -1;
   return w.def.tier * 10 + w.rarity.tier * 3;
 }
 
@@ -269,7 +335,25 @@ export function boxMesh(w: number, h: number, d: number, color: number, emissive
 }
 
 /** Gun pointing down -Z, origin at the grip. Returns group with `muzzleZ` in userData. */
+const TP_DARK = TOY ? 0xf2f2f2 : 0x1d1f23, TP_DARKER = TOY ? 0xffc21a : 0x15171a, TP_BARREL = TOY ? 0xf2f2f2 : 0x22252a;
+
 export function buildGunModel(w: WeaponInstance): Group {
+  const g = buildGunModelBase(w);
+  if (TOY && w.def.id !== 'rocket') {
+    const L = w.def.modelLength, tip = boxMesh(0.05, 0.05, 0.05, 0xff6a00, 0x552200);
+    tip.position.set(0, 0.055, -L * 0.8 - 0.05);
+    g.add(tip);
+  }
+  if (w.def.mythic) {
+    // Mythic guns glow.
+    const glow = boxMesh(0.08, 0.03, w.def.modelLength * 0.5, 0xff3fd0, 0xff3fd0);
+    glow.position.set(0, 0.1, -w.def.modelLength * 0.3);
+    g.add(glow);
+  }
+  return g;
+}
+
+function buildGunModelBase(w: WeaponInstance): Group {
   const g = new Group();
   const L = w.def.modelLength, id = w.def.id;
   const accent = w.rarity.color;
@@ -289,13 +373,13 @@ export function buildGunModel(w: WeaponInstance): Group {
     return g;
   }
   add(boxMesh(0.07, 0.1, L * 0.6, w.def.bodyColor), 0, 0.03, -L * 0.25);
-  add(boxMesh(0.035, 0.035, L * 0.45, 0x22252a), 0, 0.055, -L * 0.55 - 0.02);
-  add(boxMesh(0.05, 0.12, 0.06, 0x1d1f23), 0, -0.06, 0).rotation.x = -0.25;
+  add(boxMesh(0.035, 0.035, L * 0.45, TP_BARREL), 0, 0.055, -L * 0.55 - 0.02);
+  add(boxMesh(0.05, 0.12, 0.06, TP_DARK), 0, -0.06, 0).rotation.x = -0.25;
   add(boxMesh(0.075, 0.025, L * 0.35, accent, darken(accent)), 0, 0.09, -L * 0.25);
   if (id === 'revolver') add(boxMesh(0.08, 0.08, 0.09, 0x3a3f47), 0, 0.03, -0.06);
   if (id !== 'pistol' && id !== 'revolver') {
     const magH = id === 'shotgun' ? 0.06 : id === 'lmg' ? 0.12 : 0.14;
-    const mag = add(boxMesh(id === 'lmg' ? 0.12 : 0.045, magH, 0.07, 0x1d1f23), 0, -0.07, -L * 0.3);
+    const mag = add(boxMesh(id === 'lmg' ? 0.12 : 0.045, magH, 0.07, TP_DARKER), 0, -0.07, -L * 0.3);
     if (w.att.extmag) mag.scale.y *= 1.6;
     add(boxMesh(0.05, 0.08, L * 0.25, w.def.bodyColor), 0, 0.0, L * 0.12);
   }

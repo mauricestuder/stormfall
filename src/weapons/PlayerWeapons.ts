@@ -15,6 +15,10 @@ const BURST_GAP = 0.26;
 /** Grappling hook: charges, and seconds for each one to come back. */
 export const HOOK_CHARGES = 3, HOOK_RECHARGE = 30;
 const THROW_ORDER: ThrowKind[] = ['frag', 'smoke', 'flash'];
+/** Hold G this long and the grenade wheel opens (a quick tap just takes out the current grenade). */
+const WHEEL_DELAY = 0.18;
+/** Wheel slices, clockwise from the top: [kind, centre angle in radians, screen space, y down]. */
+export const WHEEL_SLOTS: [ThrowKind, number][] = [['frag', -Math.PI / 2], ['smoke', Math.PI / 6], ['flash', (Math.PI * 5) / 6]];
 
 export type Channel = { type: 'medkit' | 'plate'; time: number; total: number };
 type ReloadKind = ReloadAnim['kind'];
@@ -36,8 +40,11 @@ export class PlayerWeapons {
   recoilYaw = 0;
   channel: Channel | null = null;
   view: ViewModel;
-  /** Holding G: the throw arc is showing. */
+  /** A grenade is in your hand: the throw arc is showing (left click or G throws, right click puts it away). */
   aimingThrow = false;
+  /** Grenade wheel (hold G): open, where the cursor is (pixels from the centre), and which slice it's on. */
+  wheel = { open: false, x: 0, y: 0, sel: 'frag' as ThrowKind };
+  private gHeld = 0;
   shotsFired = 0;
   private reloadKind: ReloadKind = 'mag';
   private reloadTotal = 1;
@@ -95,6 +102,8 @@ export class PlayerWeapons {
     if (!this.armed(player)) {
       player.ads = false;
       this.aimingThrow = false;
+      this.wheel.open = false;
+      this.gHeld = 0;
       this.arc.visible = false;
       this.burstLeft = 0;
       return;
@@ -208,7 +217,61 @@ export class PlayerWeapons {
 
   // ---------- grenades ----------
 
+  /** Mouse (or right stick) movement while the wheel is open steers its cursor instead of the camera. */
+  wheelLook(dx: number, dy: number) {
+    const w = this.wheel;
+    w.x += dx * 0.6;
+    w.y += dy * 0.6;
+    const r = Math.hypot(w.x, w.y);
+    if (r > 120) {
+      w.x *= 120 / r;
+      w.y *= 120 / r;
+    }
+    if (r > 30) {
+      const a = Math.atan2(w.y, w.x);
+      let best = w.sel, bd = Infinity;
+      for (const [k, c] of WHEEL_SLOTS) {
+        const d = Math.abs(((a - c + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+        if (d < bd) {
+          bd = d;
+          best = k;
+        }
+      }
+      if (best !== w.sel) this.game.sfx.click();
+      w.sel = best;
+    }
+  }
+
+  private startThrowAim(player: Player) {
+    if (player.throwables[player.throwSel] <= 0 || this.throwCd > 0 || this.channel) return;
+    this.aimingThrow = true;
+    this.reloadLeft = 0;
+    this.burstLeft = 0;
+    this.game.sfx.pin();
+  }
+
   private updateThrow(dt: number, input: Input, player: Player) {
+    // G: tap to take out your grenade, hold for the wheel; letting go picks the slice under the cursor.
+    const w = this.wheel;
+    if (input.isDown('KeyG') && !this.channel) {
+      this.gHeld += dt;
+      if (this.gHeld >= WHEEL_DELAY && !w.open) {
+        w.open = true;
+        w.x = w.y = 0;
+        w.sel = player.throwSel;
+        this.game.sfx.swap();
+      }
+    } else if (this.gHeld > 0) {
+      this.gHeld = 0;
+      if (w.open) {
+        w.open = false;
+        if (player.throwables[w.sel] > 0) {
+          player.throwSel = w.sel;
+          this.startThrowAim(player);
+        } else this.game.hud.pickupToast(`No ${THROWABLES[w.sel].name}s`, '#ff8a6b');
+      } else if (this.aimingThrow) this.throwNow(player);
+      else this.startThrowAim(player);
+    }
     if (input.pressed('KeyZ')) {
       // Cycle to the next type you actually carry.
       const start = THROW_ORDER.indexOf(player.throwSel);
@@ -226,12 +289,13 @@ export class PlayerWeapons {
       if (any) player.throwSel = any;
     }
     const have = player.throwables[player.throwSel] > 0;
-    if (input.isDown('KeyG') && have && this.throwCd <= 0 && !this.channel) {
-      if (!this.aimingThrow) {
-        this.aimingThrow = true;
-        this.reloadLeft = 0;
-        this.burstLeft = 0;
-        this.game.sfx.pin();
+    if (this.aimingThrow && (!have || this.channel)) this.aimingThrow = false;
+    if (this.aimingThrow && !w.open) {
+      if (input.mousePressed[0]) return this.throwNow(player);
+      if (input.mousePressed[2]) {
+        this.aimingThrow = false;
+        this.arc.visible = false;
+        return;
       }
       const { from, vel } = this.throwParams(player);
       this.game.projectiles.predict(from, vel, this.arcPts);
@@ -239,19 +303,19 @@ export class PlayerWeapons {
       this.arc.computeLineDistances();
       this.arc.visible = true;
       (this.arc.material as LineDashedMaterial).color.setHex(THROWABLES[player.throwSel].color | 0x404040);
-    } else if (this.aimingThrow) {
-      this.aimingThrow = false;
-      this.arc.visible = false;
-      if (have) {
-        const { from, vel } = this.throwParams(player);
-        this.game.projectiles.throw(player.throwSel, from, vel, player);
-        player.throwables[player.throwSel]--;
-        this.throwCd = 0.7;
-        this.switchLeft = 0.35;
-        this.game.sfx.throwWhoosh();
-      }
-    }
-    void dt;
+    } else this.arc.visible = false;
+  }
+
+  private throwNow(player: Player) {
+    this.aimingThrow = false;
+    this.arc.visible = false;
+    if (player.throwables[player.throwSel] <= 0) return;
+    const { from, vel } = this.throwParams(player);
+    this.game.projectiles.throw(player.throwSel, from, vel, player);
+    player.throwables[player.throwSel]--;
+    this.throwCd = 0.7;
+    this.switchLeft = 0.35;
+    this.game.sfx.throwWhoosh();
   }
 
   private rope: Mesh | null = null;
@@ -442,6 +506,8 @@ export class PlayerWeapons {
     this.reloadLeft = 0;
     this.burstLeft = 0;
     this.aimingThrow = false;
+    this.wheel.open = false;
+    this.gHeld = 0;
     this.arc.visible = false;
   }
 }

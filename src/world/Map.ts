@@ -6,10 +6,32 @@ import { CONFIG } from '../config';
 import { CollisionWorld, type Box } from '../core/Collision';
 import { Terrain } from '../core/Terrain';
 import { clamp, lerp, mulberry32, pick, rand, randInt, type Rng } from '../core/rng';
-import { THEME } from '../theme';
+import { THEME, TOY } from '../theme';
+import { ballPitCanvas, buildToy, buildToyChest, TOY_SPECS, type ToyKind } from './Toys';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 export type TownSize = 'city' | 'town' | 'village';
+
+const ROCK_SHADES = new Set([0x8a8f96, 0x9da3a8, 0x7a7f86, 0xa59e94]);
+/** Plastic brick colours for Toy Box towns. */
+const BRICKS = [0xd01712, 0x0057a8, 0xf5cd2f, 0x00852b, 0xf4f4f4, 0xfe8a18, 0x36aebf, 0xa5ca18, 0xe4cd9e, 0xa0a5a9, 0x8a12a8, 0xf4f4f4];
+const toyCache = new Map<number, number>();
+/**
+ * Toy Box: every colour in the world turned into plastic. Coloured things keep their hue but get
+ * bright; greys, whites and beiges (concrete, plaster, stone) become brick colours; rocks stay grey.
+ */
+function toyTint(hex: number) {
+  let out = toyCache.get(hex);
+  if (out !== undefined) return out;
+  const c = new Color(hex), hsl = { h: 0, s: 0, l: 0 };
+  c.getHSL(hsl);
+  if (ROCK_SHADES.has(hex)) out = c.offsetHSL(0, 0, 0.08).getHex();
+  else if (hsl.l < 0.14) out = 0x2a2b30;
+  else if (hsl.s > 0.3) out = c.setHSL(hsl.h, Math.max(0.72, hsl.s), clamp(hsl.l, 0.38, 0.62)).getHex();
+  else out = BRICKS[((hex * 2654435761) >>> 0) % BRICKS.length];
+  toyCache.set(hex, out);
+  return out;
+}
 type Flavor = 'downtown' | 'residential' | 'industrial' | 'harbor' | 'labs' | 'farm' | 'military' | 'castle' | 'airport'
   | 'fair' | 'coaster' | 'wheel' | 'haunted' | 'prison' | 'frontier';
 /** Centrepiece built in the middle of a themed town. */
@@ -444,6 +466,11 @@ export class GameMap {
   /** Walls of tall buildings a vertical zipline can climb: wall middle, roof height, outward direction. */
   private climbSpots: { x: number; z: number; top: number; ox: number; oz: number }[] = [];
   private cullables: Cullable[] = [];
+  /** Toy Box: where the giant toys are (drawn on the map). */
+  private toyMarks: { x: number; z: number; r: number; color: string }[] = [];
+  /** Terrain chunks: close up they swap to coarser meshes with distance. */
+  private lods: LOD[] = [];
+  private fullView = false;
 
   constructor(private scene: Scene) {
     this.rng = mulberry32(CONFIG.mapSeed);
@@ -466,14 +493,33 @@ export class GameMap {
     this.generateCountryside();
     yield 'Planting forests';
     this.generateScatter();
+    if (TOY) this.placeToys();
     yield 'Assembling meshes';
     this.buildMeshes();
     yield 'Drawing the map';
     this.mapCanvas = this.drawMapCanvas();
   }
 
-  /** Hides chunks beyond their draw distance. `fogFar` is the current fog distance. */
-  cull(cam: Vector3, fogFar: number, detailMul: number) {
+  /**
+   * Hides chunks beyond their draw distance. `fogFar` is the current fog distance.
+   * `full` (in the air: plane, freefall, glide): the whole island at full detail, so nothing pops in
+   * or swaps to coarse terrain while you look down at it. Grass stays close-range only.
+   */
+  cull(cam: Vector3, fogFar: number, detailMul: number, full = false) {
+    if (full !== this.fullView) {
+      this.fullView = full;
+      for (const l of this.lods) {
+        l.autoUpdate = !full;
+        if (full) l.levels.forEach((lv, i) => (lv.object.visible = i === 0));
+      }
+    }
+    if (full) {
+      for (const c of this.cullables) {
+        if (c.obj.userData.detail) c.obj.visible = !c.obj.userData.hidden && Math.hypot(c.x - cam.x, c.z - cam.z) - c.r < c.max * detailMul;
+        else c.obj.visible = !c.offshore;
+      }
+      return;
+    }
     for (const c of this.cullables) {
       const d = Math.hypot(c.x - cam.x, c.z - cam.z) - c.r;
       // The gulag and arena out at sea only show up once you're actually there (not from the plane).
@@ -4365,6 +4411,8 @@ export class GameMap {
       out.lerp(tmpC.setHex(town), clamp(k, 0, 1));
     }
     if (slope > 0.5) out.lerp(tmpC.setHex(THEME === 'western' ? 0xb4643c : 0x9c9a8f), clamp((slope - 0.5) * 2, 0, THEME === 'western' ? 0.85 : 0.7));
+    // Toy Box: the grass is a bright green play mat.
+    if (TOY) out.offsetHSL(0.02, 0.16, 0.04);
     return out;
   }
 
@@ -4403,8 +4451,54 @@ export class GameMap {
     for (const d of this.detail) d.userData.hidden = !on;
   }
 
+  /**
+   * Toy Box: giant toys dropped around the countryside (and ducks in the water). Uses its own random
+   * stream so the rest of the island is exactly the same as the classic one.
+   */
+  private placeToys() {
+    const rng = mulberry32(CONFIG.mapSeed + 991), T = this.terrain;
+    const mat = new MeshLambertMaterial({ vertexColors: true });
+    const marks: Record<ToyKind, string> = {
+      blocks: '#ffc21a', brick: '#e3342f', dice: '#f4f4f4', ball: '#2f6fe0', crayon: '#8b3fe0', rings: '#ff7a1a', rocket: '#e3342f', teddy: '#9a6232', duck: '#ffd21a',
+    };
+    for (const kind of Object.keys(TOY_SPECS) as ToyKind[]) {
+      const spec = TOY_SPECS[kind];
+      let placed = 0;
+      for (let tries = 0; tries < 400 && placed < spec.count; tries++) {
+        const x = rand(rng, -this.half + 30, this.half - 30), z = rand(rng, -this.half + 30, this.half - 30), r = spec.r;
+        const hs = [[x, z], [x - r, z - r], [x + r, z - r], [x - r, z + r], [x + r, z + r]].map(([a, b]) => T.heightAt(a, b));
+        let y: number;
+        if (spec.water) {
+          if (Math.max(...hs) > -1.6) continue;
+          y = -0.9;
+        } else {
+          const lo = Math.min(...hs), hi = Math.max(...hs);
+          if (lo < 1 || hi - lo > 3) continue;
+          y = lo - 0.2;
+        }
+        const rect = { x0: x - r, z0: z - r, x1: x + r, z1: z + r };
+        if (this.overlapsOccupied(rect, 3) || this.nearRoad(x, z, r + 3) || this.poiAt(x, z) || this.toyMarks.some((t) => Math.hypot(t.x - x, t.z - z) < t.r + r + 20)) continue;
+        const { b, perches } = buildToy(kind, rng);
+        const q = Math.floor(rng() * 4);
+        const { mesh, boxes } = b.finish(x, y, z, q, mat);
+        this.scene.add(mesh);
+        const bs = mesh.geometry.boundingSphere!;
+        this.cullables.push({ obj: mesh, x: bs.center.x, z: bs.center.z, r: bs.radius, max: 0 });
+        for (const bx of boxes) this.world.add(bx);
+        for (let [px, py, pz] of perches) {
+          for (let i = 0; i < q; i++) [px, pz] = [-pz, px];
+          this.lootSpots.push(new Vector3(x + px, y + py, z + pz));
+        }
+        this.occupied.push(rect);
+        this.toyMarks.push({ x, z, r: r * 0.7, color: marks[kind] });
+        placed++;
+      }
+    }
+  }
+
   private buildMeshes() {
     const rng = this.rng;
+    if (TOY) for (const s of this.solids) s.color = toyTint(s.color);
     const q = new Quaternion(), p = new Vector3(), s = new Vector3();
     const unit = new BoxGeometry(1, 1, 1);
     const item = (x: number, y: number, z: number, sx: number, sy: number, sz: number, color: number | Color, rot?: Quaternion) => ({
@@ -4457,6 +4551,7 @@ export class GameMap {
         }
       }
     }
+    if (TOY) for (const it of [...coneItems, ...blobItems]) it.c.offsetHSL(0, 0.22, 0.05);
     this.chunked(new ConeGeometry(1, 1, 7), new MeshLambertMaterial(), coneItems, 125, 0, { cast: true });
     this.chunked(new IcosahedronGeometry(1, 1), new MeshLambertMaterial({ flatShading: true }), blobItems, 125, 0, { cast: true });
 
@@ -4490,7 +4585,19 @@ export class GameMap {
 
     for (const c of this.buildTerrainChunks()) this.scene.add(c);
 
-    const sea = (this.sea = new Mesh(new PlaneGeometry(8000, 8000), new MeshLambertMaterial({ color: 0x2f8fcf })));
+    const seaMat = new MeshLambertMaterial({ color: 0x2f8fcf });
+    if (TOY) {
+      // The sea is a ball pit.
+      const tex = new CanvasTexture(ballPitCanvas());
+      tex.wrapS = tex.wrapT = RepeatWrapping;
+      tex.repeat.set(8000 / 12, 8000 / 12);
+      tex.colorSpace = SRGBColorSpace;
+      tex.anisotropy = 4;
+      seaMat.map = tex;
+      seaMat.color.setHex(0xffffff);
+      this.scene.add(buildToyChest(1450, 520));
+    }
+    const sea = (this.sea = new Mesh(new PlaneGeometry(8000, 8000), seaMat));
     sea.rotation.x = -Math.PI / 2;
     sea.position.y = -0.5;
     sea.receiveShadow = true;
@@ -4638,6 +4745,7 @@ export class GameMap {
           lod.addLevel(mesh, dist);
         }
         this.cullables.push({ obj: lod, x: ox, z: oz, r: C * T.cell * 0.72, max: 0 });
+        this.lods.push(lod);
         out.push(lod);
       }
     }
@@ -4695,7 +4803,7 @@ export class GameMap {
         const h = this.terrain.heightAt(x, z);
         const gx = this.terrain.heightAt(x + 2, z) - this.terrain.heightAt(x - 2, z);
         const gz = this.terrain.heightAt(x, z + 2) - this.terrain.heightAt(x, z - 2);
-        if (h < -0.5) c.setHex(0x2f8fcf);
+        if (h < -0.5) c.setHex(TOY ? 0x4a6fd0 : 0x2f8fcf);
         else this.groundColor(x, z, h, Math.hypot(gx, gz) / 4, c);
         const shade = clamp(1 - (gx + gz) * 0.09 + h * 0.004, 0.55, 1.35);
         const o = (py * N + px) * 4;
@@ -4717,6 +4825,15 @@ export class GameMap {
       ctx.beginPath();
       ctx.arc(tx(t.x), tx(t.z), t.r * k * 1.1, 0, Math.PI * 2);
       ctx.fill();
+    }
+    for (const t of this.toyMarks) {
+      ctx.fillStyle = t.color;
+      ctx.strokeStyle = '#1a1a1a';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(tx(t.x), tx(t.z), Math.max(3, t.r * k), 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
     }
     ctx.strokeStyle = THEME === 'western' ? '#8a6c4a' : THEME === 'park' ? '#cdbb98' : '#5b5f66';
     ctx.lineWidth = (THEME === 'park' ? 5 : 8) * k;

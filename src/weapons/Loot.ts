@@ -247,7 +247,6 @@ export class LootManager {
       pile.push({ type: 'ammo', ammo: t, amount: AMMO_INFO[t].pickup });
     }
     pile.push(randomThrowable(c.supply ? 2 : 1));
-    if (c.supply || Math.random() < 0.45) pile.push(randomAttachment());
     if (c.supply || Math.random() < 0.3) pile.push({ type: 'throwable', t: 'grapple', count: 3 });
     const front = new Vector3(0, 0, 1.2).applyAxisAngle(new Vector3(0, 1, 0), c.mesh.rotation.y);
     // Everything pops out of the open lid and arcs onto the floor in front.
@@ -294,7 +293,7 @@ export class LootManager {
         const t = AMMO_TYPES[Math.floor(Math.random() * AMMO_TYPES.length)];
         pile.push({ type: 'ammo', ammo: t, amount: AMMO_INFO[t].pickup });
       } else if (r < 0.85) pile.push(randomThrowable(1));
-      else if (r < 0.9) pile.push(randomAttachment());
+      else if (r < 0.9) pile.push({ type: 'plate', count: 1 });
       else pile.push({ type: 'throwable', t: 'grapple', count: 3 });
       this.spawnPile(pile, s);
     }

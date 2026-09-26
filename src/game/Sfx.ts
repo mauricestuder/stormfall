@@ -1,5 +1,6 @@
 import type { Vector3 } from 'three';
 import type { WeaponId } from '../weapons/Weapon';
+import { TOY } from '../theme';
 
 /** Tiny synthesized sound kit (WebAudio), no audio files needed. */
 export class Sfx {
@@ -287,8 +288,13 @@ export class Sfx {
     const g = P.gain * att * (own ? 1 : 1.15);
     const room = this.indoor;
     const verb = (room ? 0.5 : 0.16) * (far ? 1.6 : 1);
+    if (TOY && !far) {
+      // Foam blasters: a springy plastic "thwop" on top of a softer shot.
+      this.tone(520 * v, 0.07, g * 0.45, 'square', 180, delay, pan, 'punch');
+      this.burst({ dur: 0.05, freq: 1400 * v, type: 'bandpass', q: 2.5, gain: g * 0.35, pan, delay: delay + 0.01 });
+    }
     if (!far) {
-      this.burst({ dur: 0.02, freq: 3800 * v, type: 'highpass', q: 0.6, gain: g * 0.55 * P.snap, pan, delay, bus: 'punch' });
+      this.burst({ dur: 0.02, freq: 3800 * v, type: 'highpass', q: 0.6, gain: g * 0.55 * P.snap * (TOY ? 0.5 : 1), pan, delay, bus: 'punch' });
       this.burst({ dur: P.body * v, freq: P.freq * v, q: 1.2, gain: g * 1.15, pan, delay, bus: 'punch', verb });
       this.tone(P.thump * v, P.body * 1.3, g * 0.8, 'sine', 36, delay, pan, 'punch');
       this.burst({ dur: P.body * 0.55, freq: 1700 * v, type: 'bandpass', q: 1.4, gain: g * 0.3 * P.snap, pan, delay });

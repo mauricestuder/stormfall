@@ -182,7 +182,7 @@ export class Arena {
       p.unarmed = false;
       p.plates = 2;
       p.medkits = 1;
-      p.throwables = { frag: 1, smoke: 1, flash: 1, grapple: 2 };
+      p.throwables = { frag: 1, smoke: 1, flash: 1, grapple: 3 };
       for (const k of Object.keys(p.ammo) as (keyof typeof p.ammo)[]) p.ammo[k] = AMMO_INFO[k].max;
       g.weapons.reset();
       g.weapons.switchLeft = 0.4;

@@ -1,7 +1,10 @@
+import { randomTip } from './ui/tips';
+
 // The game (and three.js) load as a separate chunk so the loading screen appears instantly.
 const fill = document.getElementById('load-fill')!;
 const label = document.getElementById('load-label')!;
 const loadingEl = document.getElementById('loading')!;
+document.getElementById('load-tip')!.innerHTML = '<b>TIP</b>' + randomTip();
 
 const progress = (frac: number, text: string) => {
   fill.style.width = `${Math.round(frac * 100)}%`;

@@ -28,6 +28,10 @@ export interface SettingsData {
   squadSize: number;
   timeOfDay: TimeOfDay;
   weather: Weather;
+  /** How characters look: toy mini figures, round chubby people, monsters, a mix, or the classic soldiers. */
+  bodyStyle: 'mix' | 'minifig' | 'chubby' | 'monster' | 'classic' | 'armyman' | 'teddy' | 'robot';
+  /** Toy Box or the classic island (takes a restart: the whole world is built from it). */
+  world: 'toy' | 'classic';
   // Video extras
   postFx: boolean;
   dynamicRes: boolean;
@@ -79,6 +83,8 @@ const DEFAULTS: SettingsData = {
   squadSize: 1,
   timeOfDay: 'random',
   weather: 'random',
+  bodyStyle: 'mix',
+  world: 'toy',
   postFx: !touchDevice,
   dynamicRes: true,
   binds: {},

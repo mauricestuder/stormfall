@@ -13,6 +13,8 @@ export interface Combatant {
   health: number;
   armor: number;
   kills: number;
+  /** Head hitbox radius, when it isn't the normal 0.24 (bosses). */
+  headR?: number;
   /** Called when this combatant is hit, so bots can react to attackers. */
   onDamaged(attacker: Combatant | null, amount: number): void;
 }
@@ -26,8 +28,8 @@ export interface HitInfo {
 export function rayHitCombatant(o: Vector3, dir: Vector3, maxDist: number, c: Combatant): HitInfo | null {
   const p = c.body.pos, r = c.body.radius * 0.9, h = c.body.height;
   // Head sphere
-  const hr = 0.24;
-  const hx = p.x - o.x, hy = p.y + h - 0.22 - o.y, hz = p.z - o.z;
+  const hr = c.headR ?? 0.24;
+  const hx = p.x - o.x, hy = p.y + h - hr + 0.02 - o.y, hz = p.z - o.z;
   const tc = hx * dir.x + hy * dir.y + hz * dir.z;
   let best: HitInfo | null = null;
   if (tc > 0) {

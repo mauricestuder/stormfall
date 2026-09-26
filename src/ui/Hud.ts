@@ -9,8 +9,8 @@ import { xpForLevel } from '../game/Profile';
 import { FIST_ICON, gunIcon } from './icons';
 import { TEAM_CSS, TEAM_NAMES, type Arena } from '../game/Arena';
 import { cheatOn } from '../game/Cheats';
-import { HOOK_CHARGES, HOOK_RECHARGE } from '../weapons/PlayerWeapons';
-import { AMMO_INFO, ATT_KINDS, ATTACHMENTS, canAttach, magSize, THROWABLES, WEAPONS, type AmmoType, type AttachmentKind, type ThrowKind, type WeaponInstance } from '../weapons/Weapon';
+import { HOOK_CHARGES, HOOK_RECHARGE, WHEEL_SLOTS } from '../weapons/PlayerWeapons';
+import { AMMO_INFO, ATT_KINDS, ATTACHMENTS, canAttach, magSize, THROWABLES, WEAPONS, type AmmoType, type ThrowKind, type WeaponInstance } from '../weapons/Weapon';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -121,8 +121,6 @@ export class Hud {
   invOpen = false;
   /** Which inventory tile is selected: a gun slot (0/1) or an item key. */
   private invSel: number | string = 0;
-  /** Called when the player clicks an attachment in the inventory. */
-  onDetach: (slot: number, att: AttachmentKind, move: boolean) => void = () => {};
   onSwapSlots: () => void = () => {};
   onInventoryClose: () => void = () => {};
   /** Markers round the crosshair pointing at whoever hit you, and at nearby sounds. */
@@ -348,12 +346,11 @@ export class Hud {
       this.invEl.dataset.wired = '1';
       this.invEl.addEventListener('click', (e) => {
         const t = e.target as HTMLElement;
-        const b = t.closest<HTMLElement>('[data-slot]'), sel = t.closest<HTMLElement>('[data-sel]');
+        const sel = t.closest<HTMLElement>('[data-sel]');
         if (t.closest('[data-swap]')) {
           this.onSwapSlots();
           if (typeof this.invSel === 'number') this.invSel = 1 - this.invSel;
-        } else if (b) this.onDetach(+b.dataset.slot!, b.dataset.att as AttachmentKind, b.dataset.move === '1');
-        else if (sel) {
+        } else if (sel) {
           const v = sel.dataset.sel!;
           this.invSel = /^\d$/.test(v) ? +v : v;
         } else if (!t.closest('.inv-panel')) return this.onInventoryClose();
@@ -404,7 +401,7 @@ export class Hud {
     const gunTile = (i: number) => {
       const w = p.slots[i], sel = this.invSel === i ? ' sel' : '';
       if (!w) return `<div class="inv-tile2 empty${sel}" data-sel="${i}"><b>${i + 1}</b><small>Empty</small></div>`;
-      const dots = ATT_KINDS.filter((a) => w.att[a]).map((a) => `<i style="background:${hex(ATTACHMENTS[a].color)}"></i>`).join('');
+      const dots = ATT_KINDS.filter((a) => a !== 'scope' && w.att[a]).map((a) => `<i style="background:${hex(ATTACHMENTS[a].color)}"></i>`).join('');
       return `<div class="inv-tile2 r${w.rarity.tier}${sel}${i === p.active && !p.unarmed ? ' eq' : ''}" data-sel="${i}" draggable="true">`
         + `<b>${i + 1}</b>${gunIcon(w.def.id)}<em>${w.mag}</em><span class="dots">${dots}</span></div>`;
     };
@@ -424,17 +421,15 @@ export class Hud {
 
     let detail = '';
     if (typeof this.invSel === 'number') {
-      const i = this.invSel, w = p.slots[i], other = p.slots[1 - i];
+      const i = this.invSel, w = p.slots[i];
       if (!w) detail = `<div class="inv-detail empty"><h4>Slot ${i + 1}</h4><p>Empty — pick up a gun with <kbd>F</kbd>.</p></div>`;
       else {
         const d = w.def, dmg = d.damage * d.pellets * w.rarity.mult;
-        const atts = ATT_KINDS.filter((a) => canAttach(d, a)).map((a) => {
+        // Kit comes with the rarity: a better colour means more of these slots filled.
+        const atts = ATT_KINDS.filter((a) => a !== 'scope' && canAttach(d, a)).map((a) => {
           const info = ATTACHMENTS[a], c = hex(info.color);
-          if (!w.att[a]) return `<div class="inv-att off"><b>${info.name}</b><small>Empty slot</small></div>`;
-          const move = other && canAttach(other.def, a) && !other.att[a]
-            ? `<button data-slot="${i}" data-att="${a}" data-move="1">Move to ${other.def.name}</button>` : '';
-          return `<div class="inv-att" style="border-color:${c}"><b style="color:${c}">${info.name}</b><small>${info.desc}</small>`
-            + `<button data-slot="${i}" data-att="${a}">Drop</button>${move}</div>`;
+          if (!w.att[a]) return `<div class="inv-att off"><b>${info.name}</b><small>Needs a better rarity</small></div>`;
+          return `<div class="inv-att" style="border-color:${c}"><b style="color:${c}">${info.name}</b><small>${info.desc}</small></div>`;
         }).join('');
         detail = `<div class="inv-detail" style="--c:${w.rarity.css}"><div class="inv-rarity">${w.rarity.name}</div><h4>${d.name}</h4>`
           + `<div class="inv-big r${w.rarity.tier}">${gunIcon(d.id)}</div>`
@@ -443,7 +438,7 @@ export class Hud {
           + bar('Magazine', magSize(w), top.mag, `${w.mag}/${magSize(w)}`)
           + bar('Range', d.range, top.range, `${d.range}m`)
           + `<div class="inv-ammo-line">${AMMO_INFO[d.ammo].name}: <b>${p.ammo[d.ammo]}</b> spare</div>`
-          + `<div class="inv-atts">${atts || '<small>This gun takes no attachments</small>'}</div>`
+          + `<div class="inv-atts">${atts || '<small>This gun takes no attachments</small>'}<small>Grey: none · Blue: compensator · Purple: + grip · Gold: fully kitted</small></div>`
           + (p.slots[0] || p.slots[1] ? `<div class="inv-swap"><button data-swap="1">⇄ Swap slots</button></div>` : '')
           + `</div>`;
       }
@@ -465,14 +460,92 @@ export class Hud {
     this.setHtml(this.invEl, 'inv', html);
   }
 
+  private wheelEl: HTMLDivElement | null = null;
+
+  /** Hold G: three big slices (frag, smoke, flash) round the crosshair; move the mouse to pick one. */
+  private updateWheel() {
+    const g = this.game, w = g.weapons.wheel, p = g.player;
+    if (!this.wheelEl) {
+      const el = (this.wheelEl = document.createElement('div'));
+      el.id = 'nade-wheel';
+      const R = 210, r0 = 78, slice = (a: number) => {
+        const a0 = a - Math.PI / 3 + 0.04, a1 = a + Math.PI / 3 - 0.04;
+        const pt = (rr: number, t: number) => `${(R + Math.cos(t) * rr).toFixed(1)} ${(R + Math.sin(t) * rr).toFixed(1)}`;
+        return `M ${pt(r0, a0)} L ${pt(R - 4, a0)} A ${R - 4} ${R - 4} 0 0 1 ${pt(R - 4, a1)} L ${pt(r0, a1)} A ${r0} ${r0} 0 0 0 ${pt(r0, a0)} Z`;
+      };
+      el.innerHTML = `<svg viewBox="0 0 420 420">${WHEEL_SLOTS.map(([k, a]) => `<path data-k="${k}" d="${slice(a)}"/>`).join('')}</svg>`
+        + WHEEL_SLOTS.map(([k, a]) => {
+          const c = '#' + (THROWABLES[k].color | 0x303030).toString(16).padStart(6, '0');
+          return `<div class="nw-item" data-k="${k}" style="left:${50 + Math.cos(a) * 34}%;top:${50 + Math.sin(a) * 34}%"><i style="background:${c}"></i><b>${THROWABLES[k].name.toUpperCase()}</b><em></em></div>`;
+        }).join('')
+        + '<div class="nw-center"><small>GRENADE</small><b></b></div><div class="nw-dot"></div>';
+      document.getElementById('hud')!.appendChild(el);
+    }
+    const el = this.wheelEl;
+    el.classList.toggle('open', w.open);
+    if (!w.open) return;
+    const key = `${w.sel}|${p.throwables.frag}|${p.throwables.smoke}|${p.throwables.flash}`;
+    if (el.dataset.key !== key) {
+      el.dataset.key = key;
+      el.querySelectorAll<HTMLElement>('[data-k]').forEach((n) => {
+        const k = n.dataset.k as ThrowKind;
+        n.classList.toggle('sel', k === w.sel);
+        n.classList.toggle('none', !p.throwables[k]);
+        const em = n.querySelector('em');
+        if (em) em.textContent = `× ${p.throwables[k]}`;
+      });
+      el.querySelector('.nw-center b')!.textContent = THROWABLES[w.sel].name.toUpperCase();
+    }
+    (el.querySelector('.nw-dot') as HTMLElement).style.transform = `translate(${w.x.toFixed(0)}px, ${w.y.toFixed(0)}px)`;
+  }
+
   toggleBigMap() {
     this.bigMapOpen = !this.bigMapOpen;
     this.bigmap.classList.toggle('open', this.bigMapOpen);
   }
 
+  private bossEl: HTMLDivElement | null = null;
+
+  /** The boss you're fighting: name, title and a big health bar across the top of the screen. */
+  private updateBossBar() {
+    const g = this.game, p = g.player;
+    let boss: Bot | null = null, bd = Infinity;
+    if (p.alive && !g.arena) {
+      for (const b of g.bots.bots) {
+        const s = b.boss;
+        if (!s || !b.alive) continue;
+        const d = b.body.pos.distanceTo(p.body.pos);
+        if (d < 110 && (b.target === p || s.hurtByYou < 8 || d < 35) && d < bd) {
+          bd = d;
+          boss = b;
+        }
+      }
+    }
+    if (!this.bossEl) {
+      const el = (this.bossEl = document.createElement('div'));
+      el.id = 'boss-bar';
+      el.innerHTML = '<div class="bb-name"><b></b><small></small></div><div class="bb-bar"><i class="bb-lag"></i><i class="bb-hp"></i></div><div class="bb-gun"></div>';
+      document.getElementById('hud')!.appendChild(el);
+    }
+    const el = this.bossEl;
+    el.classList.toggle('show', !!boss);
+    if (!boss) return;
+    const s = boss.boss!, k = clamp(boss.health / s.maxHealth, 0, 1);
+    if (el.dataset.id !== s.def.id) {
+      el.dataset.id = s.def.id;
+      el.querySelector('.bb-name b')!.textContent = boss.name.toUpperCase();
+      el.querySelector('.bb-name small')!.textContent = s.def.title;
+      el.querySelector('.bb-gun')!.textContent = `Drops: Mythic ${boss.weapon.def.name}`;
+      el.style.setProperty('--boss', s.def.color);
+    }
+    (el.querySelector('.bb-hp') as HTMLElement).style.width = `${(k * 100).toFixed(1)}%`;
+    (el.querySelector('.bb-lag') as HTMLElement).style.width = `${(k * 100).toFixed(1)}%`;
+  }
+
   update(dt: number) {
     const g = this.game, p = g.player, w = p.weapon, wpn = g.weapons;
     this.updateMarks(dt);
+    this.updateBossBar();
     const onFoot = p.mode === 'ground';
 
     // Vitals
@@ -493,7 +566,7 @@ export class Hud {
       this.setText($('mag'), 'mag', String(w.mag));
       $('mag').classList.toggle('low', w.mag <= Math.ceil(w.def.mag * 0.25) && w.def.mag > 2);
       this.setText($('reserve'), 'reserve', `/ ${p.ammo[w.def.ammo]}`);
-      const atts = ATT_KINDS.filter((a) => w.att[a])
+      const atts = ATT_KINDS.filter((a) => a !== 'scope' && w.att[a])
         .map((a) => `<i class="att" style="background:#${ATTACHMENTS[a].color.toString(16).padStart(6, '0')}" title="${ATTACHMENTS[a].name}"></i>`).join('');
       this.setHtml($('wname'), 'wname', `<span style="color:${w.rarity.css}">${w.rarity.name.toUpperCase()}</span> ${w.def.name.toUpperCase()} ${atts}`);
     } else {
@@ -521,7 +594,8 @@ export class Hud {
       return `<span class="${sel ? 'sel' : ''}${n ? '' : ' none'}"><i style="background:${c}"></i>${THROWABLES[t].name.split(' ')[0]} <b>${n}</b></span>`;
     }).join('');
     const hook = p.hookOwned || p.throwables.grapple ? `<span class="${p.throwables.grapple ? '' : 'none'}"><i style="background:#3f9ae8"></i>Hook <b>${p.throwables.grapple}/${HOOK_CHARGES}</b>${p.hookOwned && p.throwables.grapple < HOOK_CHARGES ? ` <small>+1 in ${Math.ceil(HOOK_RECHARGE - p.hookCharge)}s</small>` : ''} <kbd>X</kbd></span>` : '';
-    this.setHtml(this.throwEl, 'throw', `${th}${hook}<em><kbd>G</kbd> throw <kbd>Z</kbd> switch</em>`);
+    this.setHtml(this.throwEl, 'throw', `${th}${hook}<em><kbd>G</kbd> tap: ready · hold: wheel</em>`);
+    this.updateWheel();
 
     // Flash / armor crack
     this.flashT = Math.max(0, this.flashT - dt);
@@ -537,7 +611,7 @@ export class Hud {
     const scoped = w?.def.id === 'sniper' && wpn.adsAmount > 0.85;
     const armed = (onFoot && !p.swimming) || p.mode === 'zipline';
     // Aiming down sights uses the gun's own sights / red dot instead.
-    this.crosshair.style.display = (scoped && armed) || (w && wpn.adsAmount > 0.45) ? 'none' : '';
+    this.crosshair.style.display = !p.alive || (scoped && armed) || (w && wpn.adsAmount > 0.45) ? 'none' : '';
     this.scope.style.display = scoped && armed ? 'block' : 'none';
     this.updateAmmoArc(w && armed && !scoped && !p.unarmed ? w : null);
     if (this.invOpen) this.renderInventory();
@@ -913,6 +987,42 @@ export class Hud {
       ctx.lineWidth = 1.5;
       ctx.fillRect(x - 6, y - 6, 12, 12);
       ctx.strokeRect(x - 6, y - 6, 12, 12);
+    }
+
+    // Bosses: a crown on their home, in their colour.
+    if (!g.arena) {
+      for (const b of g.bots.bots) {
+        if (!b.boss || !b.alive) continue;
+        const x = sx(b.boss.home.x), y = sz(b.boss.home.z), s = full ? 1.3 : 1;
+        if (x < -10 || y < -10 || x > N + 10 || y > N + 10) continue;
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.scale(s, s);
+        ctx.fillStyle = b.boss.def.color;
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(-8, 5);
+        ctx.lineTo(-8, -4);
+        ctx.lineTo(-4, 0);
+        ctx.lineTo(0, -7);
+        ctx.lineTo(4, 0);
+        ctx.lineTo(8, -4);
+        ctx.lineTo(8, 5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+        if (full) {
+          ctx.font = 'bold 11px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+          ctx.strokeText(b.name, x, y + 20);
+          ctx.fillStyle = b.boss.def.color;
+          ctx.fillText(b.name, x, y + 20);
+        }
+      }
     }
 
     // Teammates

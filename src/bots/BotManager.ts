@@ -95,7 +95,7 @@ export class BotManager {
 
   get aliveCount() {
     let n = 0;
-    for (const b of this.bots) if (b.alive) n++;
+    for (const b of this.bots) if (b.alive && !b.boss) n++;
     return n;
   }
 }

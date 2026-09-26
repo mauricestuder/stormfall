@@ -1,3 +1,4 @@
+import { TOY } from '../theme';
 import { ACTIONS, keyName } from '../core/Input';
 import type { SettingsData } from '../core/Settings';
 import type { Game } from '../game/Game';
@@ -23,6 +24,7 @@ type Row =
   | { key: keyof SettingsData; label: string; type: 'toggle' }
   | { key: keyof SettingsData; label: string; type: 'select'; options: [string, string][]; num?: boolean };
 
+
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 
 const ROWS: Row[] = [
@@ -32,6 +34,13 @@ const ROWS: Row[] = [
   { key: 'squadSize', label: 'Squad size', type: 'select', num: true, options: [['1', 'Solos'], ['2', 'Duos'], ['3', 'Trios'], ['4', 'Quads']] },
   { key: 'timeOfDay', label: 'Time of day', type: 'select', options: [['random', 'Random'], ['day', 'Day'], ['sunset', 'Sunset'], ['night', 'Night']] },
   { key: 'weather', label: 'Weather', type: 'select', options: [['random', 'Random'], ['clear', 'Clear'], ['rain', 'Rain & storms'], ['fog', 'Fog']] },
+  {
+    key: 'bodyStyle', label: 'Characters', type: 'select',
+    options: TOY
+      ? [['mix', 'Mix (all the toys)'], ['minifig', 'Mini figures'], ['armyman', 'Plastic army men'], ['teddy', 'Teddy bears'], ['robot', 'Wind-up robots'], ['chubby', 'Chubby (round)'], ['monster', 'Monsters'], ['classic', 'Classic soldiers']]
+      : [['mix', 'Mix (all three funny ones)'], ['minifig', 'Mini figures'], ['chubby', 'Chubby (round)'], ['monster', 'Monsters'], ['classic', 'Classic soldiers']],
+  },
+  { key: 'world', label: 'World (restarts the game)', type: 'select', options: [['toy', 'Toy Box'], ['classic', 'Classic island']] },
   { section: 'Controls' },
   { key: 'sensitivity', label: 'Mouse sensitivity', type: 'range', min: 0.2, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) },
   { key: 'adsSensitivity', label: 'Aiming sensitivity', type: 'range', min: 0.2, max: 1.5, step: 0.05, fmt: pct },

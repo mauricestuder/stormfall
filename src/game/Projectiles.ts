@@ -135,7 +135,7 @@ export class Projectiles {
         if (t < step || pr.fuse <= 0) {
           pr.pos.addScaledVector(d, Math.min(t, step) - 0.1);
           this.remove(i);
-          g.explode(pr.pos, pr.weapon!.def.projectile!.radius, pr.weapon!.def.damage * pr.weapon!.rarity.mult, pr.owner, 'Havoc Launcher');
+          g.explode(pr.pos, pr.weapon!.def.projectile!.radius, pr.weapon!.def.damage * pr.weapon!.rarity.mult, pr.owner, pr.weapon!.def.name);
           continue;
         }
         pr.pos.addScaledVector(d, step);

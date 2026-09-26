@@ -6,6 +6,7 @@ import { clamp, damp, lerp } from '../core/rng';
 import type { Player } from '../player/Player';
 import { CAMOS } from '../game/Profile';
 import { attKey, lambert, type WeaponId, type WeaponInstance } from './Weapon';
+import { TOY } from '../theme';
 
 /** A first-person gun with the moving parts the animations need. Units are gun-space (scaled 0.55 on screen). */
 interface GunParts {
@@ -110,7 +111,8 @@ function group(parent: Object3D, x: number, y: number, z: number) {
   return g;
 }
 
-const METAL = 0x4a4f57, DARK = 0x2c3036, WOOD = 0x7a5436;
+// Toy Box: yellow and white plastic instead of steel and polymer, orange instead of wood.
+const METAL = TOY ? 0xffc21a : 0x4a4f57, DARK = TOY ? 0xf0f0f0 : 0x2c3036, WOOD = TOY ? 0xff7a1a : 0x7a5436;
 
 /** Camo colour from the locker (null = the gun's own colour). */
 let camo: number | null = null, camoAccent: number | null = null;
@@ -142,6 +144,16 @@ export function buildViewGun(w: WeaponInstance): GunParts {
     const g = group(P.root, P.support.x, P.support.y - 0.02, P.support.z);
     box(g, 0.03, 0.09, 0.035, DARK, 0, -0.045, 0);
     P.support = P.support.clone().setY(P.support.y - 0.07);
+  }
+  if (TOY && P.id !== 'rocket') {
+    // The orange safety tip every toy blaster has.
+    const m = P.muzzle;
+    box(P.root, 0.036, 0.036, 0.03, 0xff6a00, m.x, m.y, m.z - 0.012, 0, 0x5a2400);
+    P.muzzle = m.clone().setZ(m.z - 0.03);
+  }
+  if (w.def.mythic) {
+    // Mythic: a glowing pink stripe down the side.
+    for (const s of [-1, 1]) box(P.root, 0.004, 0.012, 0.22, 0xff3fd0, s * 0.032, P.sightY - 0.035, -0.12, 0, 0xff3fd0);
   }
   return P;
 }
@@ -828,7 +840,13 @@ export class ViewModel {
       return;
     }
     this.glideT = 0;
-    if (P) this.rightArm.visible = this.leftHand.visible = true;
+    if (P) {
+      this.rightArm.visible = this.leftHand.visible = true;
+      // Holding a gun: the knife is put away (even mid-inspect), and comes back out with a fresh draw.
+      this.knife.visible = false;
+      this.wasKnife = false;
+      this.inspectT = 1;
+    }
     if (!P) {
       this.lookX = this.lookY = 0;
       // Hands out: fists pumping as you run.

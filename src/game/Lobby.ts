@@ -2,7 +2,7 @@ import {
   AdditiveBlending, BufferAttribute, BufferGeometry, Color, CylinderGeometry, Group, Mesh, MeshBasicMaterial,
   MeshLambertMaterial, PerspectiveCamera, Points, PointsMaterial, SpotLight, Vector3,
 } from 'three';
-import { Character } from '../bots/Character';
+import { Character, ownBodyKind } from '../bots/Character';
 import { makeWeapon, RARITIES } from '../weapons/Weapon';
 import { buildGlider, GLIDER_HEIGHT } from '../world/Glider';
 import { BACKS, buildBackBling, EMOTES, GLIDERS, SHOWCASE, TRAILS, trailColor } from './Cosmetics';
@@ -227,12 +227,12 @@ export class Lobby {
   private syncHero() {
     const d = this.game.profile.data;
     const camo = this.game.profile.camoColor;
-    const key = `${d.skin}|${d.back}|${d.showcase}|${camo}`;
+    const key = `${d.skin}|${d.back}|${d.showcase}|${camo}|${ownBodyKind()}`;
     if (key === this.heroKey && this.hero) return;
     this.heroKey = key;
     if (this.hero) this.group.remove(this.hero.root);
     const s = skinOf(d.skin);
-    this.hero = new Character(new Color(s.suit), new Color(s.trim), undefined, s, true);
+    this.hero = new Character(new Color(s.suit), new Color(s.trim), undefined, s, true, ownBodyKind());
     const w = makeWeapon(SHOWCASE[d.showcase] ?? 'ar', RARITIES[3]);
     w.att = { scope: false, extmag: false, grip: false, muzzle: false };
     if (camo !== null) w.def = { ...w.def, bodyColor: camo };
