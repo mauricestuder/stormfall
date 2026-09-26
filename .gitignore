@@ -1,0 +1,5 @@
+node_modules
+dist
+.claude
+# Built single-file games (rebuild with `npm run share`); only the main one is kept.
+Stormfall-*.html

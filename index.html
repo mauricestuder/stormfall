@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Stormfall" />
+    <meta name="theme-color" content="#0b0f16" />
+    <meta name="format-detection" content="telephone=no" />
+    <link rel="apple-touch-icon" id="touch-icon" href="data:," />
+    <title>Stormfall</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="rotate-hint"><div>⟳</div>Turn your phone sideways to play</div>
+
+    <div id="loading">
+      <h1>STORM<span>FALL</span></h1>
+      <div class="load-bar"><i id="load-fill"></i></div>
+      <div id="load-label">Loading…</div>
+    </div>
+
+    <div id="hud" class="hidden">
+      <div id="storm-tint"></div>
+      <div id="vignette"></div>
+
+      <div id="compass"><canvas id="compass-cv" width="520" height="40"></canvas></div>
+      <div id="zone-timer"></div>
+      <div id="arena-bar"></div>
+      <div id="respawn"></div>
+      <div id="scoreboard"></div>
+      <div id="location"></div>
+      <div id="announce"></div>
+
+      <div id="topright">
+        <canvas id="minimap" width="220" height="220"></canvas>
+        <div class="stats">
+          <div><b id="alive">24</b><span id="alive-label">ALIVE</span></div>
+          <div><b id="kills">0</b><span>KILLS</span></div>
+        </div>
+      </div>
+
+      <div id="killfeed"></div>
+
+      <div id="crosshair"><i class="t"></i><i class="b"></i><i class="l"></i><i class="r"></i><em></em></div>
+      <div id="hitmarker"><i></i><i></i><i></i><i></i></div>
+      <div id="scope"></div>
+      <div id="lock-hint">CLICK TO AIM</div>
+      <div id="dmg-layer"></div>
+      <div id="indicators"></div>
+
+      <div id="prompt"></div>
+      <div id="channel"><div class="label"></div><div class="bar"><div class="fill"></div></div></div>
+      <div id="ammo-hint"></div>
+      <div id="drop-info"></div>
+      <div id="pickups"></div>
+      <div id="vehicle-hud"></div>
+      <div id="fps"></div>
+
+      <div id="vitals">
+        <div class="armor-row"><div class="seg"><div class="fill"></div></div><div class="seg"><div class="fill"></div></div></div>
+        <div class="health"><div class="fill"></div><span class="num">100</span></div>
+        <div class="items">
+          <span><kbd>V</kbd> Plates <b id="plates">0</b></span>
+          <span><kbd>H</kbd> Medkits <b id="medkits">0</b></span>
+        </div>
+      </div>
+
+      <div id="weapons">
+        <div id="ammo"><span id="mag">12</span><span id="reserve">/ 24</span></div>
+        <div id="wname"></div>
+        <div id="slots"><div class="slot"></div><div class="slot"></div><div class="slot hands"></div></div>
+      </div>
+
+      <div id="bigmap"><canvas id="bigmap-cv" width="760" height="760"></canvas></div>
+    </div>
+
+    <div id="title" class="overlay lobby" data-tab="lobby">
+      <header class="lobby-top">
+        <div class="lobby-brand"><h1>STORM<span>FALL</span></h1><div class="season">SEASON 01</div></div>
+        <nav class="lobby-nav">
+          <button class="tab on" id="lobby-tab">LOBBY</button>
+          <button class="tab" id="locker-tab">LOCKER</button>
+          <button class="tab" id="arena-tab">ARENA</button>
+          <button class="tab" id="career-tab">CAREER</button>
+          <button class="tab" id="options-tab">OPTIONS</button>
+          <button class="tab" id="controls-tab">CONTROLS</button>
+        </nav>
+        <div id="level-badge"></div>
+      </header>
+      <button class="party-slot" data-side="l"><b>+</b><span>INVITE<br>FRIENDS</span></button>
+      <button class="party-slot" data-side="r"><b>+</b><span>INVITE<br>FRIENDS</span></button>
+      <aside class="locker-panel" id="locker-panel">
+        <div class="lk-cats" id="lk-cats"></div>
+        <div class="lk-head"><b id="lk-title">OUTFIT</b><span id="lk-desc"></span></div>
+        <div class="lk-grid" id="lk-grid"></div>
+      </aside>
+      <div class="options-host" id="options-host"></div>
+      <div class="arena-host" id="arena-dock"></div>
+      <aside class="career-panel" id="career-panel"><h3>CAREER</h3><div id="career-body"></div></aside>
+      <div id="lobby-name"><div class="lobby-plate"><i id="lobby-banner"></i><div><b id="lobby-player">PLAYER</b><small id="lobby-sub"></small></div></div><button id="emote-btn" title="Play your emote (B)">&#9654; EMOTE</button></div>
+      <div class="lobby-bottom">
+        <div class="mode-card">
+          <small>MODE</small>
+          <div class="modes">
+            <button class="mode on" data-mode="br"><b>BATTLE ROYALE</b><span>Drop in · last one standing</span></button>
+            <button class="mode" data-mode="arena" id="arena-btn"><b>ARENA</b><span>Deathmatch · play with friends</span></button>
+            <button class="mode" data-mode="practice" id="practice-btn"><b>PRACTICE</b><span>Every gun · target dummies</span></button>
+          </div>
+        </div>
+        <button id="play-btn">PLAY<small id="play-sub">BATTLE ROYALE</small></button>
+      </div>
+      <aside class="controls-card" id="controls-card">
+        <h4>CONTROLS</h4>
+        <p class="controls-note">Want different keys? <button id="rebind-btn">CHANGE KEY BINDINGS</button></p>
+        <div class="controls">
+          <div><kbd>WASD</kbd> Move</div>
+          <div><kbd>Shift</kbd> Sprint</div>
+          <div><kbd>C</kbd> Crouch / Slide (while sprinting)</div>
+          <div><kbd>Space</kbd> Jump / Climb ledges / Deploy</div>
+          <div><kbd>LMB</kbd> Fire &nbsp; <kbd>RMB</kbd> Aim</div>
+          <div><kbd>R</kbd> Reload &nbsp; <kbd>1</kbd><kbd>2</kbd><kbd>Q</kbd> Swap</div>
+          <div><kbd>F</kbd> Pick up / Open chest</div>
+          <div><kbd>E</kbd> Open door / Drive / Ride zipline</div>
+          <div><kbd>G</kbd> Grenade (hold to aim) &nbsp; <kbd>Z</kbd> Switch</div>
+          <div><kbd>V</kbd> Armor plate &nbsp; <kbd>H</kbd> Medkit</div>
+          <div><kbd>M</kbd> Map &nbsp; <kbd>L</kbd> Flashlight</div>
+          <div><kbd>Esc</kbd> Pause · Controllers work too</div>
+        </div>
+        <h4 class="pad-title" id="pad-title">CONTROLLER</h4>
+        <div class="pad-layout" id="pad-layout"></div>
+      </aside>
+    </div>
+
+    <div id="arena-menu" class="overlay hidden">
+      <div class="panel">
+        <h2>ARENA</h2>
+        <div class="arena-kinds">
+          <button data-kind="tdm" class="on">TEAM DEATHMATCH<small>Blue vs red, 5 a side · first team to 40 kills</small></button>
+          <button data-kind="ffa">FREE-FOR-ALL<small>Everyone for themselves, 8 players · first to 20</small></button>
+          <button data-kind="brs">BATTLE ROYALE · SQUAD<small>You and your friends as one squad vs bot squads</small></button>
+          <button data-kind="br">BATTLE ROYALE · SOLO<small>Every player and bot for themselves · last one standing</small></button>
+        </div>
+        <button id="arena-bots">PLAY VS BOTS</button>
+        <div class="opt-section">Play with friends</div>
+        <div class="arena-row"><label for="arena-name">YOUR NAME</label><input id="arena-name" maxlength="16" placeholder="Player" autocomplete="off"></div>
+        <div class="arena-row" id="arena-connect">
+          <button id="arena-host" class="secondary">HOST A GAME</button>
+          <input id="arena-code" maxlength="5" placeholder="CODE" autocomplete="off" spellcheck="false">
+          <button id="arena-join" class="secondary">JOIN</button>
+        </div>
+        <div id="arena-lobby" class="hidden">
+          <div class="room">ROOM CODE <b id="arena-room"></b><button id="arena-copy" class="secondary">COPY</button></div>
+          <div id="arena-roster"></div>
+          <label class="arena-fill" id="arena-fill-row"><input type="checkbox" id="arena-fill" checked> Fill empty spots with bots</label>
+          <button id="arena-start">START MATCH</button>
+        </div>
+        <p id="arena-status" class="hint"></p>
+        <button id="arena-back" class="secondary">BACK</button>
+      </div>
+    </div>
+
+    <div id="pause" class="overlay hidden">
+      <div class="panel">
+        <h2>PAUSED</h2>
+        <button id="resume-btn">RESUME</button>
+        <div><button id="pause-options-btn" class="secondary">OPTIONS</button></div>
+        <div><button id="quit-btn" class="secondary">BACK TO LOBBY</button></div>
+      </div>
+    </div>
+
+    <div id="options" class="overlay hidden">
+      <div class="panel options-panel">
+        <h2>OPTIONS</h2>
+        <div id="options-list"></div>
+        <button id="options-back">BACK</button>
+        <button id="options-reset" class="secondary">RESET TO DEFAULTS</button>
+      </div>
+    </div>
+
+    <div id="end" class="overlay hidden">
+      <div class="panel">
+        <h2 id="end-title"></h2>
+        <p id="end-sub"></p>
+        <div id="end-stats"></div>
+        <button id="again-btn">BACK TO LOBBY</button>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
