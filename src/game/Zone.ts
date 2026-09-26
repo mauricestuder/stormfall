@@ -57,6 +57,12 @@ export class Zone {
   private ring: Mesh;
   /** Blowing sand around the camera near and inside a sandstorm. */
   private dust: Points | null = null;
+
+  /** Show or hide the storm wall and its dust (hidden in the menus). */
+  set shown(v: boolean) {
+    this.wall.visible = v;
+    if (this.dust) this.dust.visible = v;
+  }
   private dustPos = new Float32Array(DUST_N * 3);
   private dustLocal = new Float32Array(DUST_N * 3);
   private time = 0;

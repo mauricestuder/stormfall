@@ -94,6 +94,8 @@ export class Hud {
   private compass = $<HTMLCanvasElement>('compass-cv');
   private armorFills = [...document.querySelectorAll<HTMLElement>('#vitals .seg .fill')];
   private healthFill = document.querySelector<HTMLElement>('#vitals .health .fill')!;
+  /** Trails the health bar down so you can see the chunk you just lost. */
+  private healthGhost = document.querySelector<HTMLElement>('#vitals .health .ghost')!;
   private healthNum = document.querySelector<HTMLElement>('#vitals .health .num')!;
   private slotEls = [...document.querySelectorAll<HTMLElement>('#slots .slot')];
 
@@ -556,6 +558,7 @@ export class Hud {
     });
     const hp = Math.max(0, p.health);
     this.healthFill.style.width = `${hp}%`;
+    this.healthGhost.style.width = `${hp}%`;
     this.healthFill.classList.toggle('low', hp < 35);
     this.setText(this.healthNum, 'hp', String(Math.ceil(hp)));
     this.setText($('plates'), 'plates', String(p.plates));
@@ -568,6 +571,7 @@ export class Hud {
       this.setText($('reserve'), 'reserve', `/ ${p.ammo[w.def.ammo]}`);
       const atts = ATT_KINDS.filter((a) => a !== 'scope' && w.att[a])
         .map((a) => `<i class="att" style="background:#${ATTACHMENTS[a].color.toString(16).padStart(6, '0')}" title="${ATTACHMENTS[a].name}"></i>`).join('');
+      $('wname').style.setProperty('--rar', w.rarity.css);
       this.setHtml($('wname'), 'wname', `<span style="color:${w.rarity.css}">${w.rarity.name.toUpperCase()}</span> ${w.def.name.toUpperCase()} ${atts}`);
     } else {
       this.setText($('mag'), 'mag', '—');

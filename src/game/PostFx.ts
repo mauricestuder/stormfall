@@ -4,6 +4,7 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { BokehPass } from 'three/examples/jsm/postprocessing/BokehPass.js';
 import { INK, InkPass, TOON } from './Style';
 
 /** Colour grade: contrast, saturation, a warm/cool tint, vignette, and a red edge when hurt. */
@@ -68,10 +69,15 @@ export class PostFx {
   composer: EffectComposer;
   private bloom: UnrealBloomPass;
   private grade: ShaderPass;
+  /** Lobby depth of field: the character sharp, the island behind softly blurred. */
+  private dof: BokehPass;
 
   constructor(renderer: WebGLRenderer, scene: Scene, camera: PerspectiveCamera) {
     this.composer = new EffectComposer(renderer);
     this.composer.addPass(INK ? new InkPass(scene, camera) : new RenderPass(scene, camera));
+    this.dof = new BokehPass(scene, camera, { focus: 6, aperture: 0.007, maxblur: 0.008 });
+    this.dof.enabled = false;
+    this.composer.addPass(this.dof);
     this.composer.addPass(new ShaderPass(ClampShader));
     this.bloom = new UnrealBloomPass(new Vector2(innerWidth, innerHeight), 0.35, 0.5, 0.88);
     this.composer.addPass(this.bloom);
@@ -89,6 +95,12 @@ export class PostFx {
     if (TOON) u.uVignette.value = 0.15;
     this.bloom.strength = tod === 'night' ? 0.55 : 0.35;
     this.bloom.threshold = tod === 'night' ? 0.7 : 0.88;
+  }
+
+  /** Focus distance for the lobby blur, or null to switch it off. */
+  set focus(d: number | null) {
+    this.dof.enabled = d !== null;
+    if (d !== null) (this.dof.uniforms as Record<string, { value: number }>).focus.value = d;
   }
 
   set hurt(v: number) {

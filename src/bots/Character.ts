@@ -1,9 +1,10 @@
-import { BoxGeometry, BufferAttribute, BufferGeometry, Color, CylinderGeometry, Group, Mesh, MeshBasicMaterial, MeshLambertMaterial, Quaternion, SphereGeometry, Vector3, type Object3D } from 'three';
+import { BoxGeometry, BufferAttribute, BufferGeometry, Color, CylinderGeometry, Group, Mesh, MeshBasicMaterial, Quaternion, SphereGeometry, Vector3, type Object3D } from 'three';
 import type { Skin } from '../game/Skins';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { mergeToGeometry } from '../core/merge';
 import { attKey, buildGunModel, type WeaponInstance } from '../weapons/Weapon';
 import { TOY } from '../theme';
+import { plastic, type LitMat } from '../game/Look';
 
 function coloredBox(w: number, h: number, d: number, x: number, y: number, z: number, color: Color) {
   const g = new BoxGeometry(w, h, d).toNonIndexed();
@@ -43,11 +44,13 @@ let bodyStyle: BodyStyle = 'mix';
 /** Toy Box mixes the toys; the classic island the three funny ones. */
 const FUNNY: BodyKind[] = TOY ? ['minifig', 'armyman', 'teddy', 'robot'] : ['minifig', 'chubby', 'monster'];
 /** Your own body in 'mix' mode: picked once per session so the Locker and your corpse agree. */
-const ownMix = FUNNY[Math.floor(Math.random() * FUNNY.length)];
+const ownMix: BodyKind = TOY ? 'armyman' : FUNNY[Math.floor(Math.random() * FUNNY.length)];
 export function setBodyStyle(s: BodyStyle) {
   bodyStyle = s;
 }
 export const ownBodyKind = (): BodyKind => (bodyStyle === 'mix' ? ownMix : bodyStyle);
+/** The body an outfit shows (Toy Box outfits are whole toys; the rest follow Settings). */
+export const bodyForSkin = (s?: Skin): BodyKind => (TOY && s?.body) || ownBodyKind();
 const botBodyKind = (): BodyKind => (bodyStyle === 'mix' ? FUNNY[Math.floor(Math.random() * FUNNY.length)] : bodyStyle);
 
 interface BodySpec {
@@ -158,7 +161,7 @@ function monsterBody(suit: Color, trim: Color, rnd: () => number): BodySpec {
 function armymanBody(suit: Color): BodySpec {
   const hsl = { h: 0, s: 0, l: 0 };
   suit.getHSL(hsl);
-  const p = new Color().setHSL(hsl.h, 0.42, 0.36), dk = p.clone().multiplyScalar(0.8), lt = p.clone().lerp(WHITE, 0.12);
+  const p = new Color().setHSL(hsl.h, Math.min(0.65, Math.max(0.42, hsl.s)), Math.min(0.42, Math.max(0.24, hsl.l * 0.85))), dk = p.clone().multiplyScalar(0.8), lt = p.clone().lerp(WHITE, 0.12);
   const parts = [
     coloredBox(0.56, 0.66, 0.32, 0, 1.12, 0, p), // torso
     coloredBox(0.6, 0.07, 0.34, 0, 0.82, 0, dk), // belt
@@ -256,7 +259,7 @@ function crownParts(y: number) {
 }
 
 const gunCache = new Map<string, BufferGeometry>();
-const gunMat = new MeshLambertMaterial({ vertexColors: true });
+const gunMat = plastic({ vertexColors: true }, 0.35);
 
 function gunGeometry(w: WeaponInstance) {
   const key = `${w.def.id}:${w.rarity.tier}:${attKey(w)}:${w.def.bodyColor}`;
@@ -326,7 +329,7 @@ export class Character {
   private legs: Mesh[] = [];
   private gun: Mesh | null = null;
   private gunHolder = new Group();
-  private mat: MeshLambertMaterial;
+  private mat: LitMat;
   private walkPhase = 0;
   private flash = 0;
   private crouchK = 0;
@@ -342,9 +345,10 @@ export class Character {
   /** Overall size (bosses are giants). */
   size = 1;
 
-  constructor(suit: Color, trim: Color, marker?: number, outfit?: Skin, posable = false, kind: BodyKind = botBodyKind(), crown = false) {
+  constructor(suit: Color, trim: Color, marker?: number, outfit?: Skin, posable = false, kind: BodyKind = (TOY && outfit?.body) || botBodyKind(), crown = false) {
     this.crown = crown;
-    this.mat = new MeshLambertMaterial({ vertexColors: true });
+    // Plastic figures are glossy; bears are felt.
+    this.mat = plastic({ vertexColors: true }, kind === 'teddy' ? 0.95 : kind === 'robot' ? 0.3 : 0.5);
     this.kind = kind;
     if (outfit) {
       suit = new Color(outfit.suit);

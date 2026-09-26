@@ -1,5 +1,5 @@
 import { Color, PerspectiveCamera, Vector3 } from 'three';
-import { Character, ownBodyKind } from '../bots/Character';
+import { bodyForSkin, Character } from '../bots/Character';
 import { skinOf } from './Skins';
 import type { Game } from './Game';
 
@@ -31,7 +31,7 @@ export class DeathCam {
   start(eye: Vector3, yaw: number, pitch: number, ground: Vector3, from: Vector3 | null) {
     this.stop();
     const g = this.game, s = skinOf(g.profile.data.skin);
-    const c = new Character(new Color(s.suit), new Color(s.trim), undefined, s, false, ownBodyKind());
+    const c = new Character(new Color(s.suit), new Color(s.trim), undefined, s, false, bodyForSkin(s));
     c.root.rotation.order = 'YXZ';
     c.root.position.copy(ground);
     c.root.rotation.set(0, yaw, 0);

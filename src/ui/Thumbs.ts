@@ -1,9 +1,10 @@
 import { Box3, BoxGeometry, Color, DirectionalLight, Group, HemisphereLight, Mesh, MeshLambertMaterial, PerspectiveCamera, Scene, Vector3, WebGLRenderer, type Object3D } from 'three';
-import { Character } from '../bots/Character';
+import { bodyForSkin, Character } from '../bots/Character';
 import { BACKS, buildBackBling, GLIDERS } from '../game/Cosmetics';
 import { SKINS } from '../game/Skins';
 import { buildGunModel, makeWeapon, RARITIES, type WeaponId } from '../weapons/Weapon';
 import { buildGlider } from '../world/Glider';
+import { applyEnvironment } from '../game/Look';
 
 /**
  * Little 3D renders of locker items (outfits, back bling, gliders, guns and wraps) for the tiles,
@@ -28,6 +29,7 @@ function shoot(id: string, make: () => Object3D, yaw: number, pitch = 0.12, fill
     renderer = new WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
     renderer.setPixelRatio(1);
     renderer.setSize(SIZE, SIZE, false);
+    applyEnvironment(renderer, [scene]);
   }
   const obj = make();
   scene.add(obj);
@@ -51,8 +53,10 @@ const css = (url: string) => `url('${url}') center / contain no-repeat, ${backdr
 export const thumbs = {
   outfit: (i: number) => {
     const s = SKINS[i];
-    return css(shoot(`o${i}`, () => {
-      const c = new Character(new Color(s.suit), new Color(s.trim), undefined, s);
+    // Same body as the lobby hero, so the tile matches what you'll look like.
+    const kind = bodyForSkin(s);
+    return css(shoot(`o${i}:${kind}`, () => {
+      const c = new Character(new Color(s.suit), new Color(s.trim), undefined, s, false, kind);
       c.setGun(makeWeapon('ar', RARITIES[3]));
       return c.root;
     }, Math.PI - 0.5, 0.08, 0.72, 0.64));

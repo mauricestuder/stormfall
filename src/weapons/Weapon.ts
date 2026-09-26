@@ -1,4 +1,5 @@
-import { BoxGeometry, CylinderGeometry, Group, Mesh, MeshLambertMaterial } from 'three';
+import { BoxGeometry, CylinderGeometry, Group, Mesh } from 'three';
+import { plastic, type LitMat } from '../game/Look';
 import { TOY } from '../theme';
 
 export type AmmoType = 'light' | 'heavy' | 'shells' | 'sniper' | 'rocket';
@@ -316,13 +317,13 @@ export const THROWABLES: Record<ThrowKind, { name: string; color: number; max: n
 
 const unitBox = new BoxGeometry(1, 1, 1);
 const tube = new CylinderGeometry(1, 1, 1, 10).rotateX(Math.PI / 2);
-const matCache = new Map<string, MeshLambertMaterial>();
+const matCache = new Map<string, LitMat>();
 
-export function lambert(color: number, emissive = 0): MeshLambertMaterial {
+export function lambert(color: number, emissive = 0): LitMat {
   const key = `${color}:${emissive}`;
   let m = matCache.get(key);
   if (!m) {
-    m = new MeshLambertMaterial({ color, emissive });
+    m = plastic({ color, emissive }, 0.32);
     matCache.set(key, m);
   }
   return m;

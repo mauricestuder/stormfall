@@ -7,6 +7,7 @@ import type { Player } from '../player/Player';
 import { CAMOS } from '../game/Profile';
 import { attKey, lambert, type WeaponId, type WeaponInstance } from './Weapon';
 import { TOY } from '../theme';
+import { plastic, type LitMat } from '../game/Look';
 
 /** A first-person gun with the moving parts the animations need. Units are gun-space (scaled 0.55 on screen). */
 interface GunParts {
@@ -90,10 +91,10 @@ function scopeTube(parent: Object3D, w: number, len: number, y: number, z: numbe
 }
 const DOT = new MeshBasicMaterial({ color: 0xff2a2a });
 /** Bare hands: warm skin, knuckles and finger creases a shade darker. */
-const SKIN = new MeshLambertMaterial({ color: 0xd39a76 });
-const KNUCKLE = new MeshLambertMaterial({ color: 0xbd8462 });
+const SKIN = plastic({ color: 0xd39a76 }, 0.6);
+const KNUCKLE = plastic({ color: 0xbd8462 }, 0.6);
 
-function boxM(parent: Object3D, w: number, h: number, d: number, mat: MeshLambertMaterial, x: number, y: number, z: number, rx = 0, ry = 0) {
+function boxM(parent: Object3D, w: number, h: number, d: number, mat: LitMat, x: number, y: number, z: number, rx = 0, ry = 0) {
   const m = new Mesh(unit, mat);
   m.scale.set(w, h, d);
   m.position.set(x, y, z);
@@ -469,8 +470,8 @@ export class ViewModel {
   /** Brake toggles and their lines, held while paragliding. */
   private toggles: Object3D[] = [];
   /** The outfit's sleeves and cuffs (recoloured by the locker). */
-  private sleeveMat = new MeshLambertMaterial({ color: 0x55687a });
-  private cuffMat = new MeshLambertMaterial({ color: 0x3d4c5a });
+  private sleeveMat = plastic({ color: 0x55687a }, 0.55);
+  private cuffMat = plastic({ color: 0x3d4c5a }, 0.55);
   private glideT = 0;
   /** Butterfly knife in the right fist while your hands are out (the secret melee skin). */
   knifeOn = false;
@@ -676,7 +677,9 @@ export class ViewModel {
   }
 
   /** Outfit colours for the sleeves; glowing cuffs on the special skins. */
-  setSkin(sleeve: number, cuff: number, glow: number) {
+  setSkin(sleeve: number, cuff: number, glow: number, hand = 0xd39a76) {
+    SKIN.color.setHex(hand);
+    KNUCKLE.color.setHex(hand).multiplyScalar(0.9);
     this.sleeveMat.color.setHex(sleeve);
     this.cuffMat.color.setHex(cuff);
     this.cuffMat.emissive.setHex(glow ? glow : 0);

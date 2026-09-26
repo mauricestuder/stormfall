@@ -1,4 +1,5 @@
-import { THEME, type ThemeId } from '../theme';
+import { THEME, TOY, type ThemeId } from '../theme';
+import type { BodyKind } from '../bots/Character';
 
 /** An extra box on the body: size, centre and colour (character space, the face looks down -z). */
 export type Part = [w: number, h: number, d: number, x: number, y: number, z: number, color: number];
@@ -25,7 +26,23 @@ export interface Skin {
   eyes?: 'visor' | 'dots' | 'none';
   /** Hats, badges, masks and the like. */
   parts?: Part[];
+  /** Toy Box: the body this outfit always uses (otherwise the Settings → Characters choice). */
+  body?: BodyKind;
 }
+
+/** Toy Box outfits: whole toys. The little green army man is the default. */
+const toy = (name: string, desc: string, body: BodyKind, suit: number, trim: number, level?: number): Skin => ({
+  name, desc, body, suit, trim, glow: 0, visor: 0, sleeve: body === 'armyman' ? suit : body === 'teddy' ? suit : trim, cuff: body === 'robot' ? 0x9aa0a8 : suit,
+  glider: suit, crest: 'none', level,
+});
+const TOY_SKINS: Skin[] = TOY ? [
+  toy('Green Army Man', 'The classic little green plastic soldier, base and all.', 'armyman', 0x3f8a2a, 0x2a5a1a),
+  toy('Tan Army Man', 'The other side of the playroom war.', 'armyman', 0xb8965a, 0x7a6038, 3),
+  toy('Blue Army Man', 'Navy plastic, same old bedroll.', 'armyman', 0x3a62c0, 0x243f80, 6),
+  toy('Teddy', 'A well-loved bear with a bow tie.', 'teddy', 0x9a6232, 0xe3342f, 9),
+  toy('Wind-Up Robot', 'Tin plate, rivets and a big key in the back.', 'robot', 0xb8c0ca, 0xe3342f, 12),
+  toy('Mini Figure', 'Yellow head, claw hands, clicks together.', 'minifig', 0xe3342f, 0x2a4ab8, 15),
+] : [];
 
 const hat = (brim: number, crown: number, color: number, band = color): Part[] => [
   [brim, 0.04, brim, 0, 1.8, 0, color],
@@ -195,6 +212,7 @@ export const THEMED_SKINS: Skin[] = THEME_SKINS[THEME] ?? [];
 export const botOutfit = (id: number) => (THEMED_SKINS.length ? THEMED_SKINS[id % THEMED_SKINS.length] : undefined);
 
 export const SKINS: Skin[] = [
+  ...TOY_SKINS,
   ...THEMED_SKINS,
   {
     name: 'Recruit', desc: 'Standard issue fatigues.',
@@ -242,4 +260,6 @@ export const SKINS: Skin[] = [
   },
 ];
 
+/** First-person hand colour: plastic for the toys, skin tone otherwise. */
+export const handColor = (s: Skin) => (!TOY || !s.body ? 0xd39a76 : s.body === 'armyman' ? s.suit : s.body === 'robot' ? 0x9aa0a8 : s.body === 'teddy' ? 0xd9b48a : 0xffd23a);
 export const skinOf = (i: number | undefined) => SKINS[i ?? 0] ?? SKINS[0];

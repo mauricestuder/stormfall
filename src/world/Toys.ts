@@ -1,8 +1,9 @@
 import {
-  BoxGeometry, BufferAttribute, BufferGeometry, Color, ConeGeometry, CylinderGeometry, Mesh, MeshLambertMaterial, SphereGeometry, TorusGeometry,
+  BoxGeometry, BufferAttribute, BufferGeometry, Color, ConeGeometry, CylinderGeometry, Mesh, SphereGeometry, TorusGeometry,
 } from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { Box } from '../core/Collision';
+import { plastic, type LitMat } from '../game/Look';
 import type { Rng } from '../core/rng';
 
 /**
@@ -74,7 +75,7 @@ export class ToyBuilder {
   }
 
   /** Merged mesh at (x, y, z), turned `quarter` × 90°; collision boxes moved to match. */
-  finish(x: number, y: number, z: number, quarter: number, mat: MeshLambertMaterial) {
+  finish(x: number, y: number, z: number, quarter: number, mat: LitMat) {
     const q = ((quarter % 4) + 4) % 4;
     const geo = mergeGeometries(this.parts)!;
     geo.rotateY((-q * Math.PI) / 2);
@@ -330,7 +331,7 @@ export function buildToyChest(D: number, H: number) {
       });
     });
   }
-  const mat = new MeshLambertMaterial({ vertexColors: true, fog: false });
+  const mat = plastic({ vertexColors: true, fog: false }, 0.75);
   const { mesh } = b.finish(0, 0, 0, 0, mat);
   mesh.castShadow = mesh.receiveShadow = false;
   mesh.frustumCulled = false;

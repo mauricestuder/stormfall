@@ -7,6 +7,7 @@ import { CollisionWorld, type Box } from '../core/Collision';
 import { Terrain } from '../core/Terrain';
 import { clamp, lerp, mulberry32, pick, rand, randInt, type Rng } from '../core/rng';
 import { THEME, TOY } from '../theme';
+import { plastic } from '../game/Look';
 import { ballPitCanvas, buildToy, buildToyChest, TOY_SPECS, type ToyKind } from './Toys';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
@@ -260,7 +261,7 @@ varying vec3 vBxPos;
 varying vec3 vBxN;`;
 
 function blockyMaterial() {
-  const m = new MeshLambertMaterial();
+  const m = plastic({}, 0.5);
   m.onBeforeCompile = (sh) => {
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', BX_VARYINGS)
@@ -282,7 +283,21 @@ function blockyMaterial() {
     vec2 uv = floorish ? vBxPos.xz : (an.x > 0.5 ? vBxPos.zy : vBxPos.xy);
     vec2 cell = floor(uv * 4.0 + 0.001);
     float h = fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
-    float shade = 1.0 + (h - 0.5) * 0.1;
+    float shade = 1.0 + (h - 0.5) * ${TOY ? '0.03' : '0.1'};
+${TOY ? `
+    // Toy bricks: studs on top, staggered brick courses with shadowed seams on the sides.
+    if (floorish) {
+      vec2 f = fract(uv / 0.8) - 0.5;
+      float r = length(f);
+      float lit = dot(normalize(f + 1e-4), vec2(-0.7, -0.7));
+      shade = mix(shade, 1.0 + 0.1 * lit, smoothstep(0.3, 0.26, r) * step(0.2, r)) * (1.0 - 0.14 * smoothstep(0.31, 0.3, r) * smoothstep(0.26, 0.28, r));
+      shade *= 1.0 + 0.06 * smoothstep(0.24, 0.1, length(f + vec2(0.07)));
+    } else {
+      float row = floor(uv.y / 0.96);
+      vec2 f = vec2(fract(uv.x / 3.2 + mod(row, 2.0) * 0.5), fract(uv.y / 0.96));
+      shade *= 1.0 - 0.2 * min(1.0, step(f.y, 0.03) + step(f.x, 0.008));
+      shade *= 1.0 + 0.06 * smoothstep(0.2, 1.0, f.y);
+    }` : `
     if (floorish) {
       vec2 f = fract(uv);
       shade *= 1.0 - 0.08 * min(1.0, step(f.x, 0.035) + step(f.y, 0.035));
@@ -290,7 +305,7 @@ function blockyMaterial() {
       float row = floor(uv.y * 2.0);
       vec2 f = vec2(fract(uv.x / 1.5 + mod(row, 2.0) * 0.5), fract(uv.y * 2.0));
       shade *= 1.0 - 0.1 * min(1.0, step(f.y, 0.07) + step(f.x, 0.02));
-    }
+    }`}
     float fade = clamp(1.0 - length(vBxPos - cameraPosition) / 140.0, 0.0, 1.0);
     diffuseColor.rgb *= mix(1.0, shade, fade);
   }`);
@@ -4457,7 +4472,7 @@ export class GameMap {
    */
   private placeToys() {
     const rng = mulberry32(CONFIG.mapSeed + 991), T = this.terrain;
-    const mat = new MeshLambertMaterial({ vertexColors: true });
+    const mat = plastic({ vertexColors: true }, 0.28);
     const marks: Record<ToyKind, string> = {
       blocks: '#ffc21a', brick: '#e3342f', dice: '#f4f4f4', ball: '#2f6fe0', crayon: '#8b3fe0', rings: '#ff7a1a', rocket: '#e3342f', teddy: '#9a6232', duck: '#ffd21a',
     };
@@ -4517,10 +4532,16 @@ export class GameMap {
 
     // Flat markings: polygon offset pulls them in front of the ground so they never z-fight.
     const decalMat = new MeshLambertMaterial({ polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
-    const decalItems = this.decals.map((b) => item(
-      (b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, (b.minZ + b.maxZ) / 2,
-      b.maxX - b.minX, b.maxY - b.minY, b.maxZ - b.minZ, b.color,
-    ));
+    const hsl = { h: 0, s: 0, l: 0 };
+    const decalItems = this.decals.map((b) => {
+      const it = item(
+        (b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, (b.minZ + b.maxZ) / 2,
+        b.maxX - b.minX, b.maxY - b.minY, b.maxZ - b.minZ, b.color,
+      );
+      // Toy Box: pale paving glares in the bright sun; tone it down to a warm light grey.
+      if (TOY && it.c.getHSL(hsl).l > 0.68) it.c.setHSL(hsl.s < 0.15 ? 0.1 : hsl.h, Math.max(hsl.s, 0.12), 0.66);
+      return it;
+    });
     this.chunked(unit, decalMat, decalItems, 150, 520, { receive: true });
 
     // Tree canopies (visual only): cone layers for conifers, clumps of leafy blobs for the rest.

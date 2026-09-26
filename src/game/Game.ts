@@ -33,7 +33,8 @@ import { spawnBosses } from '../bots/Boss';
 const BLOOD = TOY ? 0xf6f0e2 : 0xa01010;
 import { Destructibles, Doors, Glass, Ziplines } from '../world/Interactive';
 import { buildGlider, GLIDER_HEIGHT } from '../world/Glider';
-import { skinOf } from './Skins';
+import { handColor, skinOf } from './Skins';
+import { applyEnvironment } from './Look';
 import { GLIDERS, TRAILS, trailColor } from './Cosmetics';
 import { Lobby } from './Lobby';
 import { GameMap } from '../world/Map';
@@ -283,6 +284,7 @@ export class Game {
     this.zone.groundAt = (x, z) => this.map.groundAt(x, z);
     this.plane = new Plane(this.scene);
     this.weapons = new PlayerWeapons(this.camera, this);
+    applyEnvironment(this.renderer, [this.scene, this.weapons.view.vmScene]);
     this.cheats = new Cheats(this);
     this.env = new Environment(this.scene, this.camera, this.sun, this.hemi, this.fog, this.sfx);
     this.killcam = new Killcam(this);
@@ -461,7 +463,7 @@ export class Game {
     this.weapons.view.knifeOn = on;
     FISTS.def.name = on ? 'Butterfly Knife' : 'Fists';
     const s = skinOf(this.profile.data.skin);
-    this.weapons.view.setSkin(s.sleeve, s.cuff, s.glow);
+    this.weapons.view.setSkin(s.sleeve, s.cuff, s.glow, handColor(s));
     const gi = this.profile.data.glider, d = GLIDERS[gi] ?? GLIDERS[0];
     const key = gi > 0 ? `d${gi}` : `o${s.glider}`;
     if (key !== this.gliderKey) {
@@ -842,6 +844,8 @@ export class Game {
     if (this.state !== 'title') this.hud.update(dt);
     this.updateDynRes(dt);
     this.renderer.toneMappingExposure = this.env.exposure * this.settings.data.brightness;
+    // Plastic reflections follow the daylight (dim at night).
+    if (TOY) this.scene.environmentIntensity = this.weapons.view.vmScene.environmentIntensity = this.hemi.intensity * (this.env.tod === 'night' ? 0.012 : 0.035);
     const needClick = this.state === 'playing' && !this.input.locked && !this.touchActive && !this.hud.invOpen && this.frameNo > this.lockAskFrame;
     if (needClick !== this.lockHintShown) {
       this.lockHintShown = needClick;
@@ -854,6 +858,8 @@ export class Game {
     }
     if (this.shadowEvery > 1 && this.frameNo % this.shadowEvery === 0) this.renderer.shadowMap.needsUpdate = true;
     if (this.lobby) this.lobby.group.visible = this.lobby.active;
+    // No storm in the menus (it tints the whole backdrop purple).
+    this.zone.shown = !this.lobby?.active;
     if (INK) {
       if (this.frameNo % 30 === 1) {
         stylize(this.scene);
@@ -865,6 +871,7 @@ export class Game {
     }
     if (this.postFx && this.settings.data.postFx) {
       this.postFx.hurt = this.player.alive ? clamp((35 - this.player.health) / 35, 0, 1) * 0.8 : 0;
+      this.postFx.focus = this.lobby?.active ? this.camera.position.distanceTo(this.lobby.focusPoint) : null;
       this.postFx.render(dt);
     } else this.renderer.render(this.scene, this.camera);
     if (this.state !== 'killcam' && !this.lobby?.active) this.weapons.view.render(this.renderer, this.camera.aspect);

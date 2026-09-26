@@ -1,6 +1,6 @@
 import { Color, PerspectiveCamera, Vector3 } from 'three';
 import { Bot } from '../bots/Bot';
-import { Character, ownBodyKind } from '../bots/Character';
+import { bodyForSkin, Character } from '../bots/Character';
 import { skinOf } from './Skins';
 import type { Combatant } from './Combat';
 import type { Game } from './Game';
@@ -45,7 +45,7 @@ export class Killcam {
   /** You, as others see you: your outfit and body style. */
   private makeBody() {
     const s = skinOf(this.game.profile.data.skin);
-    const b = new Character(new Color(s.suit), new Color(s.trim), undefined, s, false, ownBodyKind());
+    const b = new Character(new Color(s.suit), new Color(s.trim), undefined, s, false, bodyForSkin(s));
     b.root.visible = false;
     this.game.scene.add(b.root);
     return b;

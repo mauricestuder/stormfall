@@ -2,7 +2,7 @@ import {
   AdditiveBlending, BufferAttribute, BufferGeometry, Color, CylinderGeometry, Group, Mesh, MeshBasicMaterial,
   MeshLambertMaterial, PerspectiveCamera, Points, PointsMaterial, SpotLight, Vector3,
 } from 'three';
-import { Character, ownBodyKind } from '../bots/Character';
+import { bodyForSkin, Character } from '../bots/Character';
 import { makeWeapon, RARITIES } from '../weapons/Weapon';
 import { buildGlider, GLIDER_HEIGHT } from '../world/Glider';
 import { BACKS, buildBackBling, EMOTES, GLIDERS, SHOWCASE, TRAILS, trailColor } from './Cosmetics';
@@ -14,6 +14,7 @@ const HERO_Y = 0.26;
 /** Party pads behind the hero, left and right. */
 const PADS = [new Vector3(-1.5, 0, -1.3), new Vector3(1.5, 0, -1.3)];
 const Y = new Vector3(0, 1, 0);
+const tmpFocus = new Vector3();
 
 interface Pose { r: Vector3 | null; l: Vector3 | null; y?: number; x?: number; rx?: number; ry?: number; rz?: number; legs?: number; gun?: boolean }
 
@@ -153,6 +154,11 @@ export class Lobby {
     this.motePos[i * 3 + 2] = Math.sin(a) * r;
   }
 
+  /** Where the lobby camera focuses (the hero's chest). */
+  get focusPoint() {
+    return this.hero ? this.hero.root.getWorldPosition(tmpFocus).setY(this.spot.y + 1.2) : tmpFocus.copy(this.spot);
+  }
+
   /** Shown while you're in the menus (before a match). */
   get active() {
     return this.game.state === 'title';
@@ -227,12 +233,12 @@ export class Lobby {
   private syncHero() {
     const d = this.game.profile.data;
     const camo = this.game.profile.camoColor;
-    const key = `${d.skin}|${d.back}|${d.showcase}|${camo}|${ownBodyKind()}`;
+    const key = `${d.skin}|${d.back}|${d.showcase}|${camo}|${bodyForSkin(skinOf(d.skin))}`;
     if (key === this.heroKey && this.hero) return;
     this.heroKey = key;
     if (this.hero) this.group.remove(this.hero.root);
     const s = skinOf(d.skin);
-    this.hero = new Character(new Color(s.suit), new Color(s.trim), undefined, s, true, ownBodyKind());
+    this.hero = new Character(new Color(s.suit), new Color(s.trim), undefined, s, true, bodyForSkin(s));
     const w = makeWeapon(SHOWCASE[d.showcase] ?? 'ar', RARITIES[3]);
     w.att = { scope: false, extmag: false, grip: false, muzzle: false };
     if (camo !== null) w.def = { ...w.def, bodyColor: camo };
@@ -256,7 +262,7 @@ export class Lobby {
         const r = others[i];
         if (!r) return null;
         const s = skinOf(r.skin ?? 0);
-        const c = new Character(new Color(s.suit), new Color(s.trim), undefined, s, true);
+        const c = new Character(new Color(s.suit), new Color(s.trim), undefined, s, true, bodyForSkin(s));
         c.setGun(makeWeapon('ar', RARITIES[1]));
         c.root.rotation.order = 'YXZ';
         c.root.position.set(pad.x, HERO_Y, pad.z);
