@@ -181,6 +181,9 @@ export class Sfx {
     src.stop(t + dur + 0.05);
   }
 
+  /** Is there something solid between the listener and this point? (set by the game) */
+  occluder: ((at: Vector3) => boolean) | null = null;
+
   /** Stereo pan and distance attenuation for a world position. */
   private spatial(at: Vector3 | undefined, dist: number, falloff = 30) {
     const att = 1 / (1 + dist / falloff);
@@ -280,6 +283,8 @@ export class Sfx {
   shot(id: WeaponId, dist: number, at?: Vector3, lowMag = false) {
     if (dist > 420) return;
     const own = dist === 0;
+    // Behind a wall or a hill: the crack is gone, you hear a dull thud through it.
+    const muffled = !own && !!at && dist > 4 && !!this.occluder?.(at);
     const P = GUN[id];
     const { att, pan } = this.spatial(at, dist, 35);
     const v = 0.93 + Math.random() * 0.14;
@@ -293,7 +298,10 @@ export class Sfx {
       this.tone(520 * v, 0.07, g * 0.45, 'square', 180, delay, pan, 'punch');
       this.burst({ dur: 0.05, freq: 1400 * v, type: 'bandpass', q: 2.5, gain: g * 0.35, pan, delay: delay + 0.01 });
     }
-    if (!far) {
+    if (!far && muffled) {
+      this.burst({ dur: P.body * 1.3 * v, freq: P.freq * 0.45 * v, q: 1, gain: g * 0.95, pan, delay, bus: 'punch', verb });
+      this.tone(P.thump * v, P.body * 1.4, g * 0.75, 'sine', 36, delay, pan, 'punch');
+    } else if (!far) {
       this.burst({ dur: 0.02, freq: 3800 * v, type: 'highpass', q: 0.6, gain: g * 0.55 * P.snap * (TOY ? 0.5 : 1), pan, delay, bus: 'punch' });
       this.burst({ dur: P.body * v, freq: P.freq * v, q: 1.2, gain: g * 1.15, pan, delay, bus: 'punch', verb });
       this.tone(P.thump * v, P.body * 1.3, g * 0.8, 'sine', 36, delay, pan, 'punch');
@@ -427,6 +435,16 @@ export class Sfx {
     this.burst({ dur: 0.12, freq: 600, gain: 0.25 });
     this.tone(880, 0.12, 0.16, 'triangle', undefined, 0.02);
     this.tone(1320, 0.22, 0.16, 'triangle', undefined, 0.1, 0, 'master', 0.3);
+  }
+  /** Holding your breath on a scope (an inhale), or letting it out. */
+  breath(inhale: boolean) {
+    if (inhale) this.burst({ dur: 0.45, freq: 900, sweepTo: 1600, type: 'bandpass', q: 0.7, gain: 0.07, attack: 0.15 });
+    else this.burst({ dur: 0.6, freq: 1300, sweepTo: 600, type: 'bandpass', q: 0.7, gain: 0.08, attack: 0.05 });
+  }
+  /** A medal popping: a short bright two-note chime. */
+  medal() {
+    this.tone(1175, 0.08, 0.1, 'triangle', undefined, 0.18);
+    this.tone(1568, 0.14, 0.1, 'triangle', undefined, 0.25);
   }
   streak(n: number) {
     for (let i = 0; i < Math.min(n, 5); i++) this.tone(660 * Math.pow(1.26, i), 0.12, 0.16, 'triangle', undefined, 0.1 + i * 0.07);

@@ -1,6 +1,6 @@
 import { Vector3 } from 'three';
 import { CONFIG } from '../config';
-import { clamp } from '../core/rng';
+import { clamp, damp } from '../core/rng';
 import type { SettingsData } from '../core/Settings';
 import { Bot } from '../bots/Bot';
 import type { Game } from '../game/Game';
@@ -183,6 +183,28 @@ export class Hud {
     this.cache.set(key, html);
     el.innerHTML = html;
   }
+
+  private medalBox: HTMLElement | null = null;
+
+  /** Kill medals (headshot, longshot...) popping in under the crosshair. */
+  medals(list: string[]) {
+    if (!this.medalBox) {
+      this.medalBox = document.createElement('div');
+      this.medalBox.id = 'medals';
+      this.crosshair.parentElement!.appendChild(this.medalBox);
+    }
+    list.forEach((text, i) => {
+      const el = document.createElement('div');
+      el.className = `medal${text === 'HEADSHOT' ? ' head' : ''}`;
+      el.textContent = text;
+      el.style.animationDelay = `${i * 0.12}s`;
+      this.medalBox!.appendChild(el);
+      setTimeout(() => el.remove(), 2400 + i * 120);
+    });
+  }
+
+  /** Crosshair gap in px, following the gun's real spread. */
+  private chGap = 6;
 
   hit(kill: boolean, head: boolean) {
     this.hitTime = kill ? 0.35 : 0.15;
@@ -616,6 +638,11 @@ export class Hud {
     const armed = (onFoot && !p.swimming) || p.mode === 'zipline';
     // Aiming down sights uses the gun's own sights / red dot instead.
     this.crosshair.style.display = !p.alive || (scoped && armed) || (w && wpn.adsAmount > 0.45) ? 'none' : '';
+    // The lines sit where your shots can actually land: they open up with bloom and close as you aim.
+    const spread = w && !p.unarmed ? wpn.currentSpread(p) : 0;
+    const px = (Math.tan(spread) / Math.tan(((g.camera.fov * Math.PI) / 180) / 2)) * (innerHeight / 2);
+    this.chGap = damp(this.chGap, clamp(3 + px, 4, 70), 18, dt);
+    this.crosshair.style.setProperty('--gap', `${this.chGap.toFixed(1)}px`);
     this.scope.style.display = scoped && armed ? 'block' : 'none';
     this.updateAmmoArc(w && armed && !scoped && !p.unarmed ? w : null);
     if (this.invOpen) this.renderInventory();

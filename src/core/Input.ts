@@ -22,7 +22,7 @@ export const ACTIONS: { code: string; label: string }[] = [
   { code: 'KeyM', label: 'Map' },
   { code: 'Tab', label: 'Inventory' },
   { code: 'KeyL', label: 'Flashlight' },
-  { code: 'KeyY', label: 'Inspect knife' },
+  { code: 'KeyY', label: 'Inspect weapon' },
 ];
 const ACTION_CODES = new Set(ACTIONS.map((a) => a.code));
 

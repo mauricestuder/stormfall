@@ -593,10 +593,14 @@ export class ViewModel {
     boxM(h, 0.0095, 0.007, 0.1, gem(0x18c47a, 0x06402a), -0.0068, 0.004, 0.065);
   }
 
-  /** Y: flips, a toss, a spin and a close look at the blade. */
+  /** Y: knife out, flips, a toss, a spin and a close look at the blade; gun out, turn it over and admire it. */
   inspect() {
-    if (this.knifeOn && this.inspectT >= 1 && this.drawT >= 1) this.inspectT = 0;
+    if (this.parts) {
+      if (this.gunInspectT >= 1) this.gunInspectT = 0;
+    } else if (this.knifeOn && this.inspectT >= 1 && this.drawT >= 1) this.inspectT = 0;
   }
+
+  private gunInspectT = 1;
 
   /** Knife pose for this frame (called in the hands-out branch). */
   private updateKnife(dt: number) {
@@ -1034,6 +1038,22 @@ export class ViewModel {
       }
     }
     this.leftHand.position.copy(hand);
+
+    // Gun inspect: turn it to show its right side, then tip it up and roll it over, then a tap on the mag.
+    // Aiming, shooting, reloading, sprinting or healing cancels it.
+    if (this.gunInspectT < 1) {
+      if (ads > 0.05 || r || s.busy || this.sprintT > 0.3 || s.sinceShot < 0.05) this.gunInspectT = 1;
+      else {
+        this.gunInspectT = Math.min(1, this.gunInspectT + dt / 3.2);
+        const t = this.gunInspectT, k = seg(t, 0, 0.15) * (1 - seg(t, 0.84, 1)), flip = seg(t, 0.42, 0.6);
+        ry += k * lerp(0.95, -0.55, flip);
+        rz += k * lerp(-0.35, 0.75, flip);
+        rx += k * lerp(0.08, 0.5, flip);
+        pos.x -= k * 0.1;
+        pos.y += k * 0.05 + bump(t, 0.86, 0.93) * 0.012;
+        pos.z += k * 0.07;
+      }
+    }
 
     this.pose.position.copy(pos);
     this.pose.rotation.set(rx, ry, rz);

@@ -5,7 +5,7 @@ import {
 import { adaptTuning, Bot, DIFFICULTY, type BotTuning } from '../bots/Bot';
 import { BotManager } from '../bots/BotManager';
 import { CONFIG } from '../config';
-import { boxNormal, rayBox, type Box } from '../core/Collision';
+import { boxExit, boxNormal, rayBox, type Box } from '../core/Collision';
 import { Input } from '../core/Input';
 import { NavGrid, SpatialGrid } from '../core/NavGrid';
 import { clamp, damp, lerp, mulberry32 } from '../core/rng';
@@ -17,10 +17,11 @@ import { Prompts } from '../ui/Prompts';
 import { Touch } from '../ui/Touch';
 import { Vehicle, VEHICLE_SPECS, type VehicleKind } from '../vehicles/Vehicle';
 import { LootManager, lootLabel, type LootKind } from '../weapons/Loot';
+import { Bullets } from '../weapons/Bullets';
 import { PlayerWeapons } from '../weapons/PlayerWeapons';
 import { setViewCamo } from '../weapons/ViewModel';
 import {
-  AMMO_INFO, ATT_KINDS, ATTACHMENTS, canAttach, damageFalloff, FISTS, makeWeapon, magSize, RARITIES, THROWABLES, WEAPON_IDS,
+  AMMO_INFO, ATT_KINDS, ATTACHMENTS, canAttach, damageFalloff, FISTS, legMult, makeWeapon, magSize, penetration, PEN_DAMAGE, RARITIES, THROWABLES, WEAPON_IDS,
   type AmmoType, type WeaponId, type WeaponInstance,
 } from '../weapons/Weapon';
 import { Features } from '../world/Features';
@@ -60,6 +61,27 @@ import { Sfx } from './Sfx';
 import { Zone } from './Zone';
 
 const STEP = 1 / 60;
+
+export interface ShotOpts {
+  /** How far this trace reaches (defaults to the gun's range). */
+  range?: number;
+  /** Distance the round already flew (damage falloff). */
+  traveled?: number;
+  /** Damage multiplier (after going through a wall). */
+  dmgMul?: number;
+  /** A continuation (later bullet step, or past a wall): no muzzle effects, killcam or net message. */
+  cont?: boolean;
+  /** One step of a travelling bullet (Bullets draws the tracer). */
+  bullet?: boolean;
+}
+
+/** Where a shot ended. `through`: it went through a thin wall and a bullet should fly on from there. */
+export interface ShotResult {
+  t: number;
+  stopped: boolean;
+  through?: Vector3;
+}
+
 type State = 'loading' | 'title' | 'playing' | 'paused' | 'killcam' | 'over';
 
 const STREAK_NAMES = ['', '', 'DOUBLE KILL', 'TRIPLE KILL', 'QUAD KILL', 'RAMPAGE'];
@@ -103,6 +125,8 @@ export class Game {
   props!: Destructibles;
   ziplines!: Ziplines;
   projectiles!: Projectiles;
+  /** Travelling rifle rounds (bullet drop). */
+  bullets = new Bullets(this);
   nav!: NavGrid;
   grid = new SpatialGrid<Combatant>();
   /** Pathfinding searches bots may still start this step (spreads the cost out). */
@@ -1054,9 +1078,14 @@ export class Game {
     this.weapons.update(dt, this.input, p);
     this.handlePickups();
     this.sfx.listener = { pos: this.camera.position, yaw: p.yaw };
+    this.sfx.occluder ??= (at) => {
+      const o = this.camera.position, d = tmpOcc.subVectors(at, o), len = d.length();
+      return this.world.raycast(o, d.divideScalar(len), len) < len - 1.5;
+    };
 
     this.bots.update(dt, this);
     this.projectiles.update(dt);
+    this.bullets.update(dt);
     let veil = 0;
     const cp = this.camera.position;
     for (const s of this.projectiles.smokes) {
@@ -1599,7 +1628,8 @@ export class Game {
       cam.position.set(p.body.pos.x, p.body.pos.y + p.eyeHeight, p.body.pos.z);
       // Tilt while sliding (not when aiming: the sight must stay level), lean with the glider.
       const roll = this.settings.data.cameraTilt ? (p.sliding ? 0.05 * (1 - this.weapons.adsAmount) : p.mode === 'zipline' ? 0.04 : 0) + (p.mode === 'glide' ? this.gliderBank * 0.35 : 0) : 0;
-      cam.rotation.set(p.pitch + this.weapons.recoilPitch, p.yaw + this.weapons.recoilYaw, roll);
+      const wp = this.weapons;
+      cam.rotation.set(p.pitch + wp.recoilPitch + wp.breathPitch, p.yaw + wp.recoilYaw + wp.breathYaw, roll);
     }
     if (this.shake > 0 && dt > 0) {
       const s = this.shake * 0.35 * this.settings.data.screenShake;
@@ -1679,12 +1709,19 @@ export class Game {
     return dist < 6 || !this.features.bushBlocks(eye, d, dist);
   }
 
-  fireShot(shooter: Combatant, origin: Vector3, dir: Vector3, w: WeaponInstance, muzzle: Vector3) {
+  /**
+   * Traces one shot (or one step of a travelling bullet, see Bullets) and applies whatever it hits.
+   * Rounds punch through thin walls: hitscan shots carry straight on, bullets get `through` back and fly on from there.
+   */
+  fireShot(shooter: Combatant, origin: Vector3, dir: Vector3, w: WeaponInstance, muzzle: Vector3, opts: ShotOpts = {}): ShotResult {
     const def = w.def;
-    if (this.gulagPrep > 0 && this.inArena(shooter)) return;
-    this.arena?.dropShield(shooter);
-    if (shooter.isPlayer) this.music.duck(0.55);
-    let t = this.world.raycast(origin, dir, def.range);
+    const range = opts.range ?? def.range, traveled = opts.traveled ?? 0, dmgMul = opts.dmgMul ?? 1;
+    if (!opts.cont) {
+      if (this.gulagPrep > 0 && this.inArena(shooter)) return { t: 0, stopped: true };
+      this.arena?.dropShield(shooter);
+      if (shooter.isPlayer) this.music.duck(0.55);
+    }
+    let t = this.world.raycast(origin, dir, range);
     let hitBox = this.world.lastHit;
     const barrel = this.features.rayBarrel(origin, dir, t + 0.05);
     // Vehicles shield whoever is inside them.
@@ -1701,7 +1738,7 @@ export class Game {
         hitBox = null;
       }
     }
-    let hitC: Combatant | null = null, head = false;
+    let hitC: Combatant | null = null, head = false, legs = false;
     for (const c of this.combatants) {
       if (c === shooter || !c.alive || !this.inWorld(c) || c.team === shooter.team || !this.canTarget(shooter, c)) continue;
       const px = c.body.pos.x - origin.x, py = c.body.pos.y + 1 - origin.y, pz = c.body.pos.z - origin.z;
@@ -1712,6 +1749,7 @@ export class Game {
         t = h.t;
         hitC = c;
         head = h.head;
+        legs = h.legs;
         hitBox = null;
       }
     }
@@ -1722,20 +1760,24 @@ export class Game {
     const cam = this.camera.position;
     const near = byPlayer || end.distanceToSquared(cam) < 300 * 300 || muzzle.distanceToSquared(cam) < 300 * 300;
     const melee = def.range < 3;
-    const first = this.firstPellet(shooter, dir) === dir;
+    const first = !opts.cont && this.firstPellet(shooter, dir) === dir;
+    // A bullet's first step may not reach anything yet: show where it's heading.
+    const visEnd = opts.bullet && t >= range ? tmpVis.copy(origin).addScaledVector(dir, Math.min(def.range, 250)) : end;
     const nm = this.netm;
-    if (first && !melee && nm && nm.owns(shooter)) nm.sendShot(shooter, def.id, muzzle, end);
-    if (near && !melee) {
+    if (first && !melee && nm && nm.owns(shooter)) nm.sendShot(shooter, def.id, muzzle, visEnd);
+    // Travelling bullets draw their own tracers as they fly.
+    if (near && !melee && !opts.bullet) {
+      const from = opts.cont ? origin : muzzle;
       // Toy Box: chunky foam darts instead of thin tracers.
-      if (TOY) this.fx.tracer(muzzle, end, byPlayer ? 0xff8a1a : 0x5ad1ff, byPlayer ? 0.035 : 0.05, 0.09);
-      else this.fx.tracer(muzzle, end, byPlayer ? 0xffe08a : 0xff8a5a, byPlayer ? 0.02 : 0.035);
+      if (TOY) this.fx.tracer(from, end, byPlayer ? 0xff8a1a : 0x5ad1ff, byPlayer ? 0.035 : 0.05, 0.09);
+      else this.fx.tracer(from, end, byPlayer ? 0xffe08a : 0xff8a5a, byPlayer ? 0.02 : 0.035);
       // Everyone else's guns flash too, so you can see who's shooting (the first pellet is enough).
       if (!byPlayer && first) {
         this.fx.flash(muzzle, 0xffc860, def.pellets > 1 || def.id === 'sniper' ? 0.32 : 0.2);
         this.fx.flash(muzzle, 0xffffff, 0.08, 0.035);
       }
     }
-    this.killcam.shot(shooter, muzzle, end, this.matchTime);
+    if (!opts.cont) this.killcam.shot(shooter, muzzle, visEnd, this.matchTime);
     // Near misses whiz past your head, and shots at you (or landing close) show where they came from.
     if (!byPlayer && !melee && hitC !== this.player && this.player.alive) {
       const eye = cam;
@@ -1755,11 +1797,12 @@ export class Game {
         }
       }
     }
-    const dmg0 = def.damage * w.rarity.mult * damageFalloff(def, t);
+    const dmg0 = def.damage * w.rarity.mult * damageFalloff(def, traveled + t) * dmgMul;
+    const zoneMul = head ? def.headMult : legs ? legMult(def) : 1;
     if (hitC && ((this.arena && this.arena.protected(hitC)) || !this.owns(hitC))) {
       // Spawn-protected, or someone simulated on another machine: their owner applies the damage.
       const protectedNow = !!this.arena?.protected(hitC);
-      let dmg = dmg0 * (head ? def.headMult : 1);
+      let dmg = dmg0 * zoneMul;
       if (this.obr && !shooter.isPlayer && hitC instanceof Bot && hitC.human) dmg *= this.tuning.damage;
       if (!protectedNow) this.netm?.sendDamage(shooter, hitC, dmg, head);
       if (near) this.fx.burst(end, protectedNow ? 0xffffff : BLOOD, 6, { speed: 3, size: 0.08, life: 0.35, gravity: 14, dir: tmpDir.copy(dir) });
@@ -1773,7 +1816,7 @@ export class Game {
       }
     } else if (hitC) {
       const botOnBot = !this.arena && !shooter.isPlayer && !hitC.isPlayer && shooter.team !== this.player.team && hitC.team !== this.player.team;
-      let dmg = dmg0 * (head ? def.headMult : 1) * (botOnBot ? CONFIG.bots.botVsBotDamage : 1);
+      let dmg = dmg0 * zoneMul * (botOnBot ? CONFIG.bots.botVsBotDamage : 1);
       if (!shooter.isPlayer && hitC.team === this.player.team) dmg *= this.tuning.damage;
       if (shooter instanceof Bot && shooter.boss) dmg *= shooter.boss.def.dmgMul;
       const res = applyDamage(hitC, dmg);
@@ -1782,7 +1825,23 @@ export class Game {
       // Blood for flesh, blue sparks off armor.
       if (near) {
         if (res.toArmor > 0) this.fx.burst(end, 0x5ab4ff, 8, { speed: 5, size: 0.06, life: 0.25, dir: tmpDir.copy(dir).negate() });
-        if (res.toHealth > 0) this.fx.burst(end, BLOOD, 7, { speed: 3, size: 0.09, life: 0.4, gravity: 14, dir: tmpDir.copy(dir) });
+        if (res.toHealth > 0) {
+          this.fx.burst(end, BLOOD, 7, { speed: 3, size: 0.09, life: 0.4, gravity: 14, dir: tmpDir.copy(dir) });
+          // A splat on whatever is just behind them (a wall, or the ground).
+          if (first && end.distanceToSquared(cam) < 60 * 60) {
+            const wt = this.world.raycast(end, dir, 2.2);
+            if (wt < 2.2 && this.world.lastHit) {
+              const at = tmpSplat.copy(end).addScaledVector(dir, wt);
+              this.fx.splat(at, boxNormal(this.world.lastHit, at, tmpN), 0.35 + Math.min(0.4, dmg / 100), BLOOD);
+            } else {
+              // On the floor below: a building's floor if there is one, else the terrain.
+              const gx = end.x + dir.x * 0.9, gz = end.z + dir.z * 0.9, size = 0.45 + Math.min(0.5, dmg / 80);
+              const ft = this.world.raycast(tmpSplat.set(gx, end.y, gz), DOWN, 3);
+              if (ft < 3 && this.world.lastHit) this.fx.splat(tmpSplat.set(gx, end.y - ft, gz), tmpN.set(0, 1, 0), size, BLOOD);
+              else this.fx.splat(tmpSplat.set(gx, this.map.groundAt(gx, gz), gz), this.groundNormal(gx, gz, tmpN), size, BLOOD);
+            }
+          }
+        }
       }
       if (byPlayer) {
         this.stats.hits++;
@@ -1810,7 +1869,7 @@ export class Game {
       this.features.damageBarrel(barrel.barrel, dmg0);
       this.barrelBy.set(barrel.barrel, shooter);
       if (near) this.fx.burst(end, 0xff6a3a, 6, { speed: 5, size: 0.05, life: 0.2 });
-    } else if (t < def.range) {
+    } else if (t < range) {
       const n = hitBox ? boxNormal(hitBox, end, tmpN) : this.groundNormal(end.x, end.z, tmpN);
       const closeToMe = end.distanceToSquared(cam) < 120 * 120;
       if (hitBox && this.props.byBox.has(hitBox)) {
@@ -1822,10 +1881,24 @@ export class Game {
         if (hard) this.fx.burst(end, 0xffd890, 4, { speed: 7, size: 0.025, life: 0.18, gravity: 18, dir: n, glow: true });
         this.fx.burst(end, hard ? 0x9a948a : 0x7a6a4e, hard ? 3 : 5, { speed: hard ? 3 : 4, size: 0.05, life: 0.45, gravity: 14, dir: n, up: 1.2 });
         if (end.distanceToSquared(cam) > 4 * 4) this.fx.puff(end, hard ? 0xb8b0a0 : 0xa08a68, 1, 0.4, hard ? 0.06 : 0.09, 0.4, 0.6, { alpha: 0.35, grow: 1.6 });
-        if (closeToMe && !(hitBox && this.doors.byBox.has(hitBox))) this.fx.decal(end, n, def.pellets > 1 ? 0.06 : 0.085);
+        if (closeToMe && !(hitBox && this.doors.byBox.has(hitBox))) this.fx.decal(end, n, def.pellets > 1 ? 0.06 : 0.085, hard);
       }
       if (closeToMe && (byPlayer || end.distanceToSquared(cam) < 30 * 30)) this.sfx.impact(end, !!hitBox);
+      // Thin walls, doors and crates don't stop heavier rounds (once per shot).
+      const pen = penetration(def);
+      if (hitBox && pen > 0 && dmgMul === 1) {
+        const exit = boxExit(origin, dir, hitBox);
+        if (exit - t <= pen) {
+          const through = new Vector3().copy(origin).addScaledVector(dir, exit + 0.03);
+          if (near) this.fx.burst(through, 0x9a948a, 3, { speed: 3, size: 0.04, life: 0.3, gravity: 14, dir });
+          if (opts.bullet) return { t, stopped: false, through };
+          const rest = range - exit - 0.03;
+          if (rest > 0.5) this.fireShot(shooter, through, dir, w, muzzle, { range: rest, traveled: traveled + exit, dmgMul: PEN_DAMAGE, cont: true });
+          return { t, stopped: true };
+        }
+      }
     }
+    return { t, stopped: t < range };
   }
 
   private lastPelletShooter: Combatant | null = null;
@@ -1852,6 +1925,7 @@ export class Game {
     const kname = killer?.name ?? how ?? 'The Storm';
     this.hud.killfeed(kname, victim.name, w ? w.def.name : killer ? how ?? null : null, involvesMe);
     if (killer?.isPlayer && head) this.stats.headshotKills++;
+    if (killer?.isPlayer && killer !== victim && w) this.killMedals(killer, victim, head);
     if (victim.isPlayer) this.startDeathCam(killer);
     if (this.arena) return this.arenaKill(killer, victim, w, how, head);
     const redeploy = victim.isPlayer && !!this.obr && !this.redeployUsed;
@@ -1927,6 +2001,19 @@ export class Game {
       const others = this.aliveTeams(this.player.team);
       if (others.size === 0) this.endMatch(true, 1, null);
     }
+  }
+
+  /** Little badges for how you got the kill. */
+  private killMedals(killer: Combatant, victim: Combatant, head: boolean) {
+    const d = killer.body.pos.distanceTo(victim.body.pos);
+    const list: string[] = [];
+    if (head) list.push('HEADSHOT');
+    if (d >= 100) list.push(`LONGSHOT · ${Math.round(d)} M`);
+    else if (d < 3) list.push('POINT BLANK');
+    if (killer.health > 0 && killer.health <= 25) list.push('CLUTCH');
+    if (!list.length) return;
+    this.hud.medals(list);
+    this.sfx.medal();
   }
 
   private arenaKill(killer: Combatant | null, victim: Combatant, w: WeaponInstance | null, how: string | undefined, head: boolean) {
@@ -2454,7 +2541,7 @@ export class Game {
 }
 
 const tmpReach = new Vector3(), tmpReachD = new Vector3();
-const tmpDir = new Vector3(), tmpEnd = new Vector3(), tmpEye = new Vector3(), tmpN = new Vector3(), trailTmp = new Vector3();
+const tmpDir = new Vector3(), tmpEnd = new Vector3(), tmpVis = new Vector3(), tmpOcc = new Vector3(), tmpSplat = new Vector3(), tmpEye = new Vector3(), tmpN = new Vector3(), trailTmp = new Vector3();
 const UP = new Vector3(0, 1, 0), DOWN = new Vector3(0, -1, 0);
 const CHEST_NUDGES = [[0, 0], [0.8, 0], [-0.8, 0], [0, 0.8], [0, -0.8], [1.5, 0], [-1.5, 0], [0, 1.5], [0, -1.5]];
 const tmpInkSun = new Vector3();

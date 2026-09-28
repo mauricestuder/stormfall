@@ -181,6 +181,13 @@ export function rayBox(o: Vector3, idx: number, idy: number, idz: number, b: Box
   return tmin < 0 ? 0 : tmin;
 }
 
+/** Distance along a ray (unit `d`) at which it leaves a box it has entered. */
+export function boxExit(o: Vector3, d: Vector3, b: Box): number {
+  const ax = (lo: number, hi: number, oa: number, da: number) =>
+    Math.abs(da) < 1e-9 ? Infinity : Math.max((lo - oa) / da, (hi - oa) / da);
+  return Math.min(ax(b.minX, b.maxX, o.x, d.x), ax(b.minY, b.maxY, o.y, d.y), ax(b.minZ, b.maxZ, o.z, d.z));
+}
+
 const hits: Box[] = [];
 
 /** Moves a body through the world with axis-separated collision, stair stepping and sub-stepping. */

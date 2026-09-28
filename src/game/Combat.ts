@@ -22,9 +22,11 @@ export interface Combatant {
 export interface HitInfo {
   t: number;
   head: boolean;
+  /** Hit below the hips (a little less damage). */
+  legs: boolean;
 }
 
-/** Ray vs character hitbox: a body box plus a head sphere. Returns null if missed. */
+/** Ray vs character hitbox: a body box (legs are its lower part) plus a head sphere. Returns null if missed. */
 export function rayHitCombatant(o: Vector3, dir: Vector3, maxDist: number, c: Combatant): HitInfo | null {
   const p = c.body.pos, r = c.body.radius * 0.9, h = c.body.height;
   // Head sphere
@@ -36,7 +38,7 @@ export function rayHitCombatant(o: Vector3, dir: Vector3, maxDist: number, c: Co
     const d2 = hx * hx + hy * hy + hz * hz - tc * tc;
     if (d2 < hr * hr) {
       const t = tc - Math.sqrt(hr * hr - d2);
-      if (t < maxDist) best = { t, head: true };
+      if (t < maxDist) best = { t, head: true, legs: false };
     }
   }
   // Body box
@@ -51,7 +53,7 @@ export function rayHitCombatant(o: Vector3, dir: Vector3, maxDist: number, c: Co
     return tmin <= tmax;
   };
   if (slab(o.x, dir.x, p.x - r, p.x + r) && slab(o.y, dir.y, p.y, bMaxY) && slab(o.z, dir.z, p.z - r, p.z + r)) {
-    if (!best || tmin < best.t) best = { t: tmin, head: false };
+    if (!best || tmin < best.t) best = { t: tmin, head: false, legs: o.y + dir.y * tmin < p.y + h * 0.42 };
   }
   return best;
 }

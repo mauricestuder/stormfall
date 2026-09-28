@@ -58,6 +58,15 @@ export interface WeaponDef {
   bodyColor: number;
   /** A boss's one-of-a-kind gun (Mythic rarity). */
   mythic?: boolean;
+  // ---- Handling ----
+  /** Seconds to go fully down sights. */
+  adsTime: number;
+  /** Seconds after a sprint before the gun can fire. */
+  sprintToFire: number;
+  /** Movement speed multiplier while holding it. */
+  moveMult: number;
+  /** Muzzle velocity in m/s: bullets travel and drop. 0 = instant hitscan (close-range guns). */
+  bulletVel: number;
 }
 
 const pat = (climb: number, late: number, yawBias: number, yawAmp: number, yawFreq: number, yawPhase = 0): RecoilPattern =>
@@ -70,6 +79,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     hipSpread: 0.018, adsSpread: 0.005, bloomPerShot: 0.008, maxBloom: 0.04,
     range: 160, falloffStart: 20, falloffEnd: 70, falloffMin: 0.6,
     adsFov: 72, recoil: 0.014, pattern: pat(3, 0.8, 0.05, 0.3, 1.3), botRange: 18, modelLength: 0.28, bodyColor: 0x3a3f47,
+    adsTime: 0.14, sprintToFire: 0.1, moveMult: 1.05, bulletVel: 0,
   },
   revolver: {
     id: 'revolver', name: 'Magnum Revolver', ammo: 'heavy', tier: 2,
@@ -77,6 +87,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     hipSpread: 0.02, adsSpread: 0.003, bloomPerShot: 0.015, maxBloom: 0.05,
     range: 180, falloffStart: 25, falloffEnd: 80, falloffMin: 0.65,
     adsFov: 70, recoil: 0.045, pattern: pat(2, 0.9, 0.1, 0.25, 2.1), botRange: 20, modelLength: 0.34, bodyColor: 0x5a5f66,
+    adsTime: 0.2, sprintToFire: 0.14, moveMult: 1.03, bulletVel: 0,
   },
   smg: {
     id: 'smg', name: 'Viper SMG', ammo: 'light', tier: 2,
@@ -84,6 +95,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     hipSpread: 0.028, adsSpread: 0.011, bloomPerShot: 0.003, maxBloom: 0.04,
     range: 160, falloffStart: 15, falloffEnd: 55, falloffMin: 0.55,
     adsFov: 70, recoil: 0.0055, pattern: pat(8, 0.5, 0, 0.7, 0.7, 0.5), botRange: 14, modelLength: 0.5, bodyColor: 0x2d3440,
+    adsTime: 0.17, sprintToFire: 0.12, moveMult: 1.03, bulletVel: 0,
   },
   burst: {
     id: 'burst', name: 'Pulse Burst Rifle', ammo: 'light', tier: 3,
@@ -91,6 +103,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     hipSpread: 0.03, adsSpread: 0.004, bloomPerShot: 0.004, maxBloom: 0.04,
     range: 260, falloffStart: 35, falloffEnd: 120, falloffMin: 0.7,
     adsFov: 60, recoil: 0.009, pattern: pat(3, 0.6, 0.15, 0.2, 2.1), botRange: 30, modelLength: 0.7, bodyColor: 0x2e3a48,
+    adsTime: 0.24, sprintToFire: 0.2, moveMult: 0.97, bulletVel: 520,
   },
   ar: {
     id: 'ar', name: 'Striker AR', ammo: 'heavy', tier: 3,
@@ -98,6 +111,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     hipSpread: 0.034, adsSpread: 0.0035, bloomPerShot: 0.004, maxBloom: 0.05,
     range: 320, falloffStart: 50, falloffEnd: 160, falloffMin: 0.72,
     adsFov: 58, recoil: 0.0085, pattern: pat(7, 0.45, 0.2, 0.9, 0.42), botRange: 35, modelLength: 0.8, bodyColor: 0x3b3a36,
+    adsTime: 0.26, sprintToFire: 0.22, moveMult: 0.96, bulletVel: 540,
   },
   lmg: {
     id: 'lmg', name: 'Titan LMG', ammo: 'heavy', tier: 3,
@@ -105,6 +119,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     hipSpread: 0.05, adsSpread: 0.0055, bloomPerShot: 0.004, maxBloom: 0.06,
     range: 320, falloffStart: 45, falloffEnd: 150, falloffMin: 0.7,
     adsFov: 60, recoil: 0.0095, pattern: pat(10, 0.35, -0.25, 0.6, 0.3, 1), botRange: 40, modelLength: 0.95, bodyColor: 0x3d4238,
+    adsTime: 0.4, sprintToFire: 0.34, moveMult: 0.88, bulletVel: 560,
   },
   shotgun: {
     id: 'shotgun', name: 'Breacher Shotgun', ammo: 'shells', tier: 3,
@@ -112,6 +127,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     hipSpread: 0.07, adsSpread: 0.055, bloomPerShot: 0, maxBloom: 0,
     range: 70, falloffStart: 7, falloffEnd: 28, falloffMin: 0.25,
     adsFov: 76, recoil: 0.05, pattern: pat(1, 1, 0, 0.2, 1.7), botRange: 7, modelLength: 0.85, bodyColor: 0x4a3526,
+    adsTime: 0.22, sprintToFire: 0.18, moveMult: 0.98, bulletVel: 0,
   },
   dmr: {
     id: 'dmr', name: 'Warden DMR', ammo: 'sniper', tier: 3,
@@ -119,6 +135,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     hipSpread: 0.05, adsSpread: 0.001, bloomPerShot: 0.006, maxBloom: 0.03,
     range: 500, falloffStart: 120, falloffEnd: 300, falloffMin: 0.8,
     adsFov: 40, recoil: 0.028, pattern: pat(4, 0.8, 0.1, 0.3, 1.9), botRange: 60, modelLength: 0.95, bodyColor: 0x4a4538,
+    adsTime: 0.32, sprintToFire: 0.26, moveMult: 0.95, bulletVel: 720,
   },
   sniper: {
     id: 'sniper', name: 'Longshot Sniper', ammo: 'sniper', tier: 3,
@@ -126,6 +143,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     hipSpread: 0.08, adsSpread: 0.0, bloomPerShot: 0, maxBloom: 0,
     range: 650, falloffStart: 650, falloffEnd: 651, falloffMin: 1,
     adsFov: 22, recoil: 0.06, pattern: pat(1, 1, 0, 0.15, 1), botRange: 80, modelLength: 1.1, bodyColor: 0x2c3a2c,
+    adsTime: 0.45, sprintToFire: 0.38, moveMult: 0.9, bulletVel: 880,
   },
   rocket: {
     id: 'rocket', name: 'Havoc Launcher', ammo: 'rocket', tier: 4,
@@ -133,6 +151,7 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
     hipSpread: 0.012, adsSpread: 0.002, bloomPerShot: 0, maxBloom: 0,
     range: 400, falloffStart: 400, falloffEnd: 401, falloffMin: 1,
     adsFov: 62, recoil: 0.08, pattern: pat(1, 1, 0, 0.1, 1), botRange: 40, modelLength: 1.15, bodyColor: 0x4a5a3a,
+    adsTime: 0.45, sprintToFire: 0.4, moveMult: 0.88, bulletVel: 0,
   },
 };
 
@@ -263,7 +282,8 @@ export const adsSpreadOf = (w: WeaponInstance) => w.def.adsSpread;
 /** Per-shot camera kick for the i-th shot of a spray: [pitch, yaw] in radians. */
 export function recoilKick(w: WeaponInstance, i: number): [number, number] {
   const d = w.def, p = d.pattern, m = recoilMul(w);
-  const pitch = d.recoil * (i < p.climb ? 1 : p.late) * m * RECOIL_SCALE;
+  // The first shot kicks a little harder, then the spray settles into its pattern.
+  const pitch = d.recoil * (i === 0 && d.auto ? 1.3 : i < p.climb ? 1 : p.late) * m * RECOIL_SCALE;
   const yaw = d.recoil * (p.yawBias + p.yawAmp * Math.sin(i * p.yawFreq + p.yawPhase)) * m * RECOIL_SCALE;
   return [pitch * (0.92 + Math.random() * 0.16), yaw + (Math.random() - 0.5) * d.recoil * 0.12 * m];
 }
@@ -302,6 +322,18 @@ export function damageFalloff(def: WeaponDef, dist: number) {
   const t = (dist - def.falloffStart) / (def.falloffEnd - def.falloffStart);
   return 1 + (def.falloffMin - 1) * t;
 }
+
+/** How thick a wall (m) this gun's rounds can punch through. */
+export function penetration(def: WeaponDef) {
+  if (def.range < 3 || def.projectile) return 0;
+  return def.ammo === 'sniper' ? 0.7 : def.ammo === 'heavy' ? 0.45 : def.ammo === 'light' ? 0.22 : 0;
+}
+
+/** Damage kept after going through a wall. */
+export const PEN_DAMAGE = 0.6;
+
+/** Leg hits do a little less, except for shotguns (every pellet counts). */
+export const legMult = (def: WeaponDef) => (def.pellets > 1 ? 1 : 0.85);
 
 // ---- Throwables ----
 

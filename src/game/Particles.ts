@@ -1,6 +1,6 @@
 import {
   AdditiveBlending, BoxGeometry, DoubleSide, BufferGeometry, Color, DynamicDrawUsage, IcosahedronGeometry, InstancedBufferAttribute,
-  InstancedMesh, MeshBasicMaterial, NormalBlending, Object3D, PlaneGeometry, Scene, ShaderMaterial, UniformsLib, UniformsUtils, Vector3,
+  CanvasTexture, InstancedMesh, MeshBasicMaterial, SRGBColorSpace, NormalBlending, Object3D, PlaneGeometry, Scene, ShaderMaterial, UniformsLib, UniformsUtils, Vector3,
 } from 'three';
 
 /** Per-instance RGBA, fog-aware, cheap fake lighting. One draw call per particle layer. */
@@ -145,32 +145,53 @@ export class Particles {
   private decals: InstancedMesh;
   private decalNext = 0;
   private static readonly DECALS = 220;
+  private splats: InstancedMesh;
+  private splatNext = 0;
+  private static readonly SPLATS = 60;
 
   constructor(scene: Scene) {
     this.tracers = new Layer(scene, tracerGeo, true, false, 160);
     this.sparks = new Layer(scene, new BoxGeometry(1, 1, 1), false, false, 500);
     this.smoke = new Layer(scene, new IcosahedronGeometry(1, 1), false, true, 700);
     this.glows = new Layer(scene, new IcosahedronGeometry(1, 0), true, false, 300);
-    // Bullet holes: small dark squares that stay on walls and ground (oldest are reused).
-    const mat = new MeshBasicMaterial({ color: 0x17140f, transparent: true, opacity: 0.8, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
-    this.decals = new InstancedMesh(new PlaneGeometry(1, 1), mat, Particles.DECALS);
-    this.decals.frustumCulled = false;
-    this.decals.count = 0;
-    this.decals.renderOrder = 1;
-    scene.add(this.decals);
+    // Bullet holes that stay on walls and ground (oldest are reused), tinted per surface; blood splats the same way.
+    const decalMesh = (tex: CanvasTexture, cap: number) => {
+      const mat = new MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
+      const m = new InstancedMesh(new PlaneGeometry(1, 1), mat, cap);
+      m.frustumCulled = false;
+      m.count = 0;
+      m.renderOrder = 1;
+      m.setColorAt(0, new Color(1, 1, 1));
+      scene.add(m);
+      return m;
+    };
+    this.decals = decalMesh(holeTexture(), Particles.DECALS);
+    this.splats = decalMesh(splatTexture(), Particles.SPLATS);
   }
 
-  /** A bullet hole on a surface facing `normal`. */
-  decal(at: Vector3, normal: Vector3, size = 0.09) {
+  /** A bullet hole on a surface facing `normal`: chipped and pale on hard surfaces, a dark pock in dirt. */
+  decal(at: Vector3, normal: Vector3, size = 0.09, hard = true) {
+    this.decalNext = this.stamp(this.decals, this.decalNext, Particles.DECALS, at, normal, size * 2.2, hard ? 0xffffff : 0x6e5a40);
+  }
+
+  /** A blood (or stuffing) splat on the ground or a wall. */
+  splat(at: Vector3, normal: Vector3, size: number, color: number) {
+    this.splatNext = this.stamp(this.splats, this.splatNext, Particles.SPLATS, at, normal, size, color);
+  }
+
+  private stamp(m: InstancedMesh, next: number, cap: number, at: Vector3, normal: Vector3, size: number, color: number) {
     dummy.position.copy(at).addScaledVector(normal, 0.01);
     dummy.lookAt(tmpT.copy(dummy.position).add(normal));
-    dummy.rotateZ(Math.random() * Math.PI);
+    dummy.rotateZ(Math.random() * Math.PI * 2);
     dummy.scale.setScalar(size * (0.8 + Math.random() * 0.4));
     dummy.updateMatrix();
-    this.decals.setMatrixAt(this.decalNext, dummy.matrix);
-    this.decalNext = (this.decalNext + 1) % Particles.DECALS;
-    this.decals.count = Math.max(this.decals.count, this.decalNext === 0 ? Particles.DECALS : this.decalNext);
-    this.decals.instanceMatrix.needsUpdate = true;
+    m.setMatrixAt(next, dummy.matrix);
+    m.setColorAt(next, tmpCol.setHex(color));
+    const n = (next + 1) % cap;
+    m.count = Math.max(m.count, n === 0 ? cap : n);
+    m.instanceMatrix.needsUpdate = true;
+    m.instanceColor!.needsUpdate = true;
+    return n;
   }
 
   /** A quick bright flash (someone else's muzzle flash, a spark of light). */
@@ -254,3 +275,57 @@ export class Particles {
 
 }
 
+
+const tmpCol = new Color();
+
+/** Bullet hole: a black core, a ring of chipped, lighter material and a few hairline cracks. */
+function holeTexture() {
+  const N = 64, cv = document.createElement('canvas');
+  cv.width = cv.height = N;
+  const g = cv.getContext('2d')!, c = N / 2;
+  const chip = g.createRadialGradient(c, c, 0, c, c, c);
+  chip.addColorStop(0, 'rgba(40,36,32,0.9)');
+  chip.addColorStop(0.5, 'rgba(120,112,100,0.55)');
+  chip.addColorStop(1, 'rgba(120,112,100,0)');
+  g.fillStyle = chip;
+  g.fillRect(0, 0, N, N);
+  g.strokeStyle = 'rgba(30,26,22,0.6)';
+  g.lineWidth = 1;
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + Math.random() * 0.6;
+    g.beginPath();
+    g.moveTo(c, c);
+    g.lineTo(c + Math.cos(a) * c * (0.5 + Math.random() * 0.4), c + Math.sin(a) * c * (0.5 + Math.random() * 0.4));
+    g.stroke();
+  }
+  g.fillStyle = 'rgba(8,6,5,1)';
+  g.beginPath();
+  g.arc(c, c, N * 0.13, 0, Math.PI * 2);
+  g.fill();
+  const t = new CanvasTexture(cv);
+  t.colorSpace = SRGBColorSpace;
+  return t;
+}
+
+/** A splat: a blob with droplets around it (white, tinted per instance). */
+function splatTexture() {
+  const N = 128, cv = document.createElement('canvas');
+  cv.width = cv.height = N;
+  const g = cv.getContext('2d')!, c = N / 2;
+  g.fillStyle = 'rgba(255,255,255,0.85)';
+  for (let i = 0; i < 9; i++) {
+    const a = Math.random() * Math.PI * 2, d = Math.random() * N * 0.14;
+    g.beginPath();
+    g.arc(c + Math.cos(a) * d, c + Math.sin(a) * d, N * (0.1 + Math.random() * 0.1), 0, Math.PI * 2);
+    g.fill();
+  }
+  for (let i = 0; i < 14; i++) {
+    const a = Math.random() * Math.PI * 2, d = N * (0.25 + Math.random() * 0.2);
+    g.beginPath();
+    g.arc(c + Math.cos(a) * d, c + Math.sin(a) * d, N * (0.012 + Math.random() * 0.025), 0, Math.PI * 2);
+    g.fill();
+  }
+  const t = new CanvasTexture(cv);
+  t.colorSpace = SRGBColorSpace;
+  return t;
+}

@@ -14,6 +14,8 @@ const SHELL_TIME = 0.45, SHELL_START = 0.3, SHELL_END = 0.4;
 const BURST_GAP = 0.26;
 /** Grappling hook: charges, and seconds for each one to come back. */
 export const HOOK_CHARGES = 3, HOOK_RECHARGE = 30;
+/** Seconds you can hold your breath on a scope. */
+export const BREATH_HOLD = 4;
 const THROW_ORDER: ThrowKind[] = ['frag', 'smoke', 'flash'];
 /** Hold G this long and the grenade wheel opens (a quick tap just takes out the current grenade). */
 const WHEEL_DELAY = 0.18;
@@ -38,6 +40,13 @@ export class PlayerWeapons {
   adsAmount = 0;
   recoilPitch = 0;
   recoilYaw = 0;
+  /** Scope sway from breathing (snipers and DMRs aimed in). Added to the camera like recoil. */
+  breathPitch = 0;
+  breathYaw = 0;
+  /** Holding your breath (Shift while scoped): seconds held, and how winded you are afterwards. */
+  breathHeld = 0;
+  winded = 0;
+  private breathT = 0;
   channel: Channel | null = null;
   view: ViewModel;
   /** A grenade is in your hand: the throw arc is showing (left click or G throws, right click puts it away). */
@@ -55,6 +64,13 @@ export class PlayerWeapons {
   /** Shot index within the current spray (drives the recoil pattern). */
   private sprayIdx = 0;
   private burstLeft = 0;
+  /** Sprint-to-fire: the gun is still coming up out of a sprint. */
+  private sprintOut = 0;
+  /** A semi-auto shot pressed while the gun was still coming up (fires as soon as it can). */
+  private queuedShot = false;
+  /** Recoil the current spray pushed into your aim; it drifts back once you let go (unless you pulled it down yourself). */
+  private sprayRise = 0;
+  private sprayStartPitch = 0;
   private throwCd = 0;
   private arc: Line;
   private arcPts: Vector3[] = [];
@@ -98,6 +114,16 @@ export class PlayerWeapons {
     this.recoilPitch = damp(this.recoilPitch, 0, 7, dt);
     this.recoilYaw = damp(this.recoilYaw, 0, 7, dt);
     if (this.sinceShot > 0.35) this.sprayIdx = 0;
+    if (this.sinceShot > 0.1 && this.sprayRise > 0) {
+      // Only give back what you didn't already fight down yourself.
+      const left = Math.min(this.sprayRise, player.pitch - this.sprayStartPitch);
+      if (left <= 0) this.sprayRise = 0;
+      else {
+        const r = left * (1 - Math.exp(-9 * dt));
+        player.pitch -= r;
+        this.sprayRise = left - r < 0.0004 ? 0 : left - r;
+      }
+    }
 
     if (!this.armed(player)) {
       player.ads = false;
@@ -134,6 +160,9 @@ export class PlayerWeapons {
 
     const w = player.weapon;
     if (w !== this.reloadWeapon) this.reloadLeft = 0;
+    // Coming out of a sprint the gun needs a moment to come up (snappy SMGs, slow LMGs and snipers).
+    if (player.sprinting) this.sprintOut = w ? w.def.sprintToFire : 0;
+    else this.sprintOut = Math.max(0, this.sprintOut - dt);
     this.view.setWeapon(w);
 
     this.updateThrow(dt, input, player);
@@ -170,7 +199,8 @@ export class PlayerWeapons {
     // Hands out: punch.
     this.punchCd -= dt;
     if (player.unarmed && input.mouseDown[0] && this.punchCd <= 0 && !this.channel && !this.aimingThrow) this.punch(player);
-    if (player.unarmed && input.pressed('KeyY')) this.view.inspect();
+    if (input.pressed('KeyY') && !this.channel && !this.aimingThrow) this.view.inspect();
+    this.updateBreath(dt, input, player);
 
     // Toggle aim: right-click flips aiming on and off instead of holding.
     const rmb = input.mouseDown[2];
@@ -178,7 +208,9 @@ export class PlayerWeapons {
     this.rmbWas = rmb;
     if (!w || this.switchLeft > 0) this.aimLatched = false;
     player.ads = !!w && (this.toggleAim ? this.aimLatched : rmb) && this.switchLeft <= 0 && !this.channel && !this.aimingThrow;
-    this.adsAmount = damp(this.adsAmount, player.ads ? 1 : 0, 16 * this.adsSpeed, dt);
+    // Each gun has its own aim-in time (the settings slider scales it); dropping out of sights is quicker.
+    const adsRate = w ? (3 / w.def.adsTime) * (this.adsSpeed / 0.55) * (player.ads ? 1 : 1.4) : 16 * this.adsSpeed;
+    this.adsAmount = damp(this.adsAmount, player.ads ? 1 : 0, adsRate, dt);
     if (!w) return;
 
     // Reload (shotguns load shell by shell and can be interrupted by firing)
@@ -190,9 +222,19 @@ export class PlayerWeapons {
     }
 
     // Fire (burst rifles keep going until the burst is done)
-    const trigger = w.def.auto ? input.mouseDown[0] : input.mousePressed[0];
+    let trigger = w.def.auto ? input.mouseDown[0] : input.mousePressed[0];
+    if (trigger && player.sprinting) {
+      // Pulling the trigger ends the sprint; the shot comes once the gun is up.
+      player.sprintLock = Math.max(player.sprintLock, w.def.sprintToFire + 0.15);
+      player.sprinting = false;
+    }
+    if (!w.def.auto && input.mousePressed[0] && this.sprintOut > 0) this.queuedShot = true;
+    if (this.queuedShot && this.sprintOut <= 0) {
+      trigger = true;
+      this.queuedShot = false;
+    }
     if (trigger && this.reloadLeft > 0 && this.reloadKind !== 'mag' && w.mag > 0) this.reloadLeft = 0;
-    const ready = this.cooldown <= 0 && this.reloadLeft <= 0 && this.switchLeft <= 0 && !this.channel && !this.aimingThrow;
+    const ready = this.cooldown <= 0 && this.reloadLeft <= 0 && this.switchLeft <= 0 && !this.channel && !this.aimingThrow && this.sprintOut <= 0;
     if (this.burstLeft > 0) {
       if (ready && w.mag > 0) {
         this.fire(w, player);
@@ -213,6 +255,30 @@ export class PlayerWeapons {
         this.fire(w, player);
       }
     }
+  }
+
+  /** Long scopes drift with your breathing; hold Shift to steady the shot for a few seconds. */
+  private updateBreath(dt: number, input: Input, player: Player) {
+    const w = player.weapon, id = w?.def.id;
+    const amp = (id === 'sniper' ? 0.0032 : id === 'dmr' ? 0.0016 : 0) * this.adsAmount;
+    const hold = amp > 0 && this.adsAmount > 0.8 && input.isDown('ShiftLeft') && this.winded <= 0 && this.breathHeld < BREATH_HOLD;
+    if (hold) {
+      if (this.breathHeld === 0) this.game.sfx.breath(true);
+      this.breathHeld += dt;
+      if (this.breathHeld >= BREATH_HOLD) {
+        this.winded = 2;
+        this.game.sfx.breath(false);
+      }
+    } else {
+      if (this.breathHeld > 0 && this.winded <= 0) this.game.sfx.breath(false);
+      if (this.breathHeld > 0 && this.winded <= 0 && this.breathHeld < BREATH_HOLD) this.winded = Math.min(1, this.breathHeld * 0.25);
+      this.breathHeld = 0;
+      this.winded = Math.max(0, this.winded - dt);
+    }
+    const k = hold ? 0.08 : 1 + this.winded * 0.8;
+    this.breathT += dt * (1 + this.winded * 0.6);
+    this.breathPitch = damp(this.breathPitch, Math.sin(this.breathT * 1.1) * amp * k, 10, dt);
+    this.breathYaw = damp(this.breathYaw, Math.sin(this.breathT * 0.55 + 1.3) * amp * 0.8 * k, 10, dt);
   }
 
   // ---------- grenades ----------
@@ -430,13 +496,20 @@ export class PlayerWeapons {
     } else {
       for (let i = 0; i < w.def.pellets; i++) {
         const dir = applySpread(tmpD.copy(fwd), spread);
-        this.game.fireShot(player, origin, dir, w, muzzle);
+        // Rifles fire real bullets (travel time and drop); close-range guns stay hitscan.
+        if (w.def.bulletVel > 0) this.game.bullets.fire(player, origin, dir, w, muzzle);
+        else this.game.fireShot(player, origin, dir, w, muzzle);
       }
     }
     this.bloom = Math.min(w.def.maxBloom, this.bloom + w.def.bloomPerShot);
     // Learnable recoil pattern: part of the climb recovers, part stays (you pull down to control it).
     const adsMul = lerp(1, 0.65, this.adsAmount);
+    if (this.sprayIdx === 0) {
+      this.sprayRise = 0;
+      this.sprayStartPitch = player.pitch;
+    }
     const [kp, ky] = recoilKick(w, this.sprayIdx++);
+    this.sprayRise += kp * adsMul * 0.45 * 0.75;
     this.recoilPitch += kp * adsMul * 0.55;
     this.recoilYaw -= ky * adsMul * 0.55;
     player.pitch = clamp(player.pitch + kp * adsMul * 0.45, -1.55, 1.55);
@@ -505,6 +578,9 @@ export class PlayerWeapons {
     this.channel = null;
     this.reloadLeft = 0;
     this.burstLeft = 0;
+    this.sprayRise = 0;
+    this.queuedShot = false;
+    this.breathPitch = this.breathYaw = this.breathHeld = 0;
     this.aimingThrow = false;
     this.wheel.open = false;
     this.gHeld = 0;

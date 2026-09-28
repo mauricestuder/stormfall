@@ -399,6 +399,7 @@ export class Player implements Combatant {
       else if (this.ads) target = P.adsSpeed;
       else if (this.sprinting) target = P.sprintSpeed;
       if (this.unarmed && !this.crouching) target *= HANDS_SPEED;
+      else if (this.weapon) target *= this.weapon.def.moveMult; // light guns are quicker to run with than heavy ones
       if (this.inWater) target *= 0.55;
 
       if (b.onGround) {
