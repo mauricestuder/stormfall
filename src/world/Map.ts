@@ -1,6 +1,6 @@
 import {
-  BoxGeometry, BufferAttribute, IcosahedronGeometry, BufferGeometry, CanvasTexture, Color, ConeGeometry, CylinderGeometry, InstancedMesh, LOD,
-  Matrix4, Mesh, MeshLambertMaterial, Object3D, PlaneGeometry, Quaternion, RepeatWrapping, Scene, SRGBColorSpace, Vector3, type Material,
+  AdditiveBlending, BoxGeometry, BufferAttribute, IcosahedronGeometry, BufferGeometry, CanvasTexture, Color, ConeGeometry, CylinderGeometry, InstancedMesh, LOD,
+  Matrix4, Mesh, MeshBasicMaterial, MeshLambertMaterial, MeshStandardMaterial, Object3D, PlaneGeometry, Points, PointsMaterial, Quaternion, RepeatWrapping, Scene, SRGBColorSpace, Vector3, type Material,
 } from 'three';
 import { CONFIG } from '../config';
 import { CollisionWorld, type Box } from '../core/Collision';
@@ -8,27 +8,39 @@ import { Terrain } from '../core/Terrain';
 import { clamp, lerp, mulberry32, pick, rand, randInt, type Rng } from '../core/rng';
 import { THEME, TOY } from '../theme';
 import { plastic } from '../game/Look';
-import { ballPitCanvas, buildToy, buildToyChest, TOY_SPECS, type ToyKind } from './Toys';
+import { furnish, FURNITURE_COLORS, type Placed, type Rect as Rect2, type RoomKind } from './Interior';
+import { waterCanvas, buildToy, TOY_SPECS, type ToyKind } from './Toys';
+import { STREET_PROP_SIZE, streetPropGeometry, type StreetPropKind } from './StreetProps';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 export type TownSize = 'city' | 'town' | 'village';
 
 const ROCK_SHADES = new Set([0x8a8f96, 0x9da3a8, 0x7a7f86, 0xa59e94]);
-/** Plastic brick colours for Toy Box towns. */
-const BRICKS = [0xd01712, 0x0057a8, 0xf5cd2f, 0x00852b, 0xf4f4f4, 0xfe8a18, 0x36aebf, 0xa5ca18, 0xe4cd9e, 0xa0a5a9, 0x8a12a8, 0xf4f4f4];
+/** Army playset plastic for Toy Box towns: tan, sand, khaki, olive, stone grey (like the bunkers and barracks in the bag). */
+const BRICKS = [0xc9b07a, 0xd8c592, 0xa89868, 0x7d8a4a, 0x9aa07a, 0xb9b8a8, 0x8f8d80, 0xc4a070, 0x6f7c42, 0xe0d4b0, 0xa6805a, 0xb0b89a];
 const toyCache = new Map<number, number>();
 /**
  * Toy Box: every colour in the world turned into plastic. Coloured things keep their hue but get
  * bright; greys, whites and beiges (concrete, plaster, stone) become brick colours; rocks stay grey.
  */
+/** Charred metal, rust, soot, churned earth and rubble: the battlefield keeps these as they are. */
+const WAR_COLORS = new Set([0x2b2825, 0x3a302a, 0x4a3d33, 0x1c1b1a, 0x6b3a22, 0x7a4a2a, 0x5a5048, 0x6e675e, 0x4f4a44, 0x3b332c]);
+const WRECK_BODY = [0x2b2825, 0x3a302a, 0x4a3d33, 0x3b332c];
+/** Window frames, sills, kerbs and railings: painted trim that stays white or grey in Toy Box. */
+const TRIM = 0xf1ede2, SILL = 0xdcd6c8, KERB = 0xc9c5bb, RAILING = 0x2e3338, MULLION = 0x3a4048;
+const KEEP_COLORS = new Set([TRIM, SILL, KERB, RAILING, MULLION]);
+/** Skyscraper glass in Toy Box: clear blues and teals (kept as glass, not turned into bricks). */
+const TOY_GLASS = [0x4f8fd0, 0x3f78b8, 0x5aa0d8, 0x3f8fa0, 0x6a8fd8];
+
 function toyTint(hex: number) {
   let out = toyCache.get(hex);
   if (out !== undefined) return out;
   const c = new Color(hex), hsl = { h: 0, s: 0, l: 0 };
   c.getHSL(hsl);
-  if (ROCK_SHADES.has(hex)) out = c.offsetHSL(0, 0, 0.08).getHex();
+  if (FURNITURE_COLORS.has(hex) || WAR_COLORS.has(hex) || KEEP_COLORS.has(hex)) out = hex;
+  else if (ROCK_SHADES.has(hex)) out = c.offsetHSL(0, 0, 0.08).getHex();
   else if (hsl.l < 0.14) out = 0x2a2b30;
-  else if (hsl.s > 0.3) out = c.setHSL(hsl.h, Math.max(0.72, hsl.s), clamp(hsl.l, 0.38, 0.62)).getHex();
+  else if (hsl.s > 0.3) out = c.setHSL(hsl.h, clamp(hsl.s, 0.34, 0.58), clamp(hsl.l, 0.3, 0.56)).getHex();
   else out = BRICKS[((hex * 2654435761) >>> 0) % BRICKS.length];
   toyCache.set(hex, out);
   return out;
@@ -114,6 +126,8 @@ interface Footprint extends Rect {
 interface Solid {
   minX: number; minY: number; minZ: number; maxX: number; maxY: number; maxZ: number;
   color: number;
+  /** Curtain-wall glass: drawn shiny, without the brick pattern. */
+  glassy?: boolean;
 }
 
 interface Opening {
@@ -128,7 +142,7 @@ interface Opening {
 type BoxFn = (x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, color: number, collide?: boolean) => void;
 type RectFn = (x0: number, y0: number, z0: number, x1: number, y1: number, z1: number) => void;
 /** Local-space building helper: solid boxes plus doors, glass panes and breakable props. */
-type Builder = BoxFn & { door: RectFn; glass: RectFn; prop: (kind: 'crate' | 'fence', x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, color: number) => void };
+type Builder = BoxFn & { door: RectFn; glass: RectFn; hit: BoxFn; prop: (kind: 'crate' | 'fence', x0: number, y0: number, z0: number, x1: number, y1: number, z1: number, color: number) => void };
 
 /** The island layout is hand-placed so every match is played on the same, learnable map. */
 const BASE_TOWNS: Omit<POI, 'y'>[] = [
@@ -258,10 +272,15 @@ const CANYON = THEME === 'western' ? { w: 12, wall: 16, pts: [[250, -490], [240,
  */
 const BX_VARYINGS = `#include <common>
 varying vec3 vBxPos;
-varying vec3 vBxN;`;
+varying vec3 vBxN;
+varying vec3 vBxS;
+float bxHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }`;
 
-function blockyMaterial() {
-  const m = plastic({}, 0.5);
+/**
+ * Hooks world position, world normal and the box's size (instance scale) into a material, then runs
+ * `frag` right after the base colour is known (it may change `diffuseColor`).
+ */
+function worldPosMaterial<M extends Material>(m: M, frag: string): M {
   m.onBeforeCompile = (sh) => {
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', BX_VARYINGS)
@@ -273,30 +292,59 @@ function blockyMaterial() {
     bxM = bxM * mat3(instanceMatrix);
   #endif
   vBxPos = (modelMatrix * bxW).xyz;
-  vBxN = normalize(bxM * objectNormal);`);
+  vBxN = normalize(bxM * objectNormal);
+  vBxS = vec3(length(bxM[0]), length(bxM[1]), length(bxM[2]));`);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', BX_VARYINGS)
       .replace('#include <color_fragment>', `#include <color_fragment>
   {
+${frag}
+  }`);
+  };
+  // Every variant shares the hook above, so tell three.js they are different programs.
+  m.customProgramCacheKey = () => frag;
+  return m;
+}
+
+function blockyMaterial() {
+  return worldPosMaterial(plastic({}, 0.5), `
     vec3 an = abs(vBxN);
     bool floorish = an.y > 0.5;
     vec2 uv = floorish ? vBxPos.xz : (an.x > 0.5 ? vBxPos.zy : vBxPos.xy);
+    vec2 face = floorish ? vBxS.xz : (an.x > 0.5 ? vBxS.zy : vBxS.xy);
     vec2 cell = floor(uv * 4.0 + 0.001);
-    float h = fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
+    float h = bxHash(cell);
     float shade = 1.0 + (h - 0.5) * ${TOY ? '0.03' : '0.1'};
 ${TOY ? `
-    // Toy bricks: studs on top, staggered brick courses with shadowed seams on the sides.
     if (floorish) {
+      // Toy bricks: studs on top.
       vec2 f = fract(uv / 0.8) - 0.5;
       float r = length(f);
       float lit = dot(normalize(f + 1e-4), vec2(-0.7, -0.7));
       shade = mix(shade, 1.0 + 0.1 * lit, smoothstep(0.3, 0.26, r) * step(0.2, r)) * (1.0 - 0.14 * smoothstep(0.31, 0.3, r) * smoothstep(0.26, 0.28, r));
       shade *= 1.0 + 0.06 * smoothstep(0.24, 0.1, length(f + vec2(0.07)));
+    } else if (min(face.x, face.y) > 1.1) {
+      // Walls: real brickwork, each brick its own shade, with recessed mortar joints (anti-aliased,
+      // fading to plain colour where the joints get too fine to draw).
+      vec2 bs = vec2(0.5, 0.21);
+      float row = floor(uv.y / bs.y);
+      float off = mod(row, 2.0) * 0.5;
+      vec2 q = vec2(uv.x / bs.x + off, uv.y / bs.y);
+      vec2 f = fract(q);
+      float hb = bxHash(vec2(floor(q.x), row) + 7.0);
+      vec2 fw = fwidth(q);
+      float detail = 1.0 - smoothstep(0.08, 0.3, max(fw.x, fw.y));
+      vec2 j = vec2(0.035, 0.085) + fw;
+      vec2 m = smoothstep(vec2(0.0), j, f) * smoothstep(vec2(0.0), j, 1.0 - f);
+      float brick = (1.0 + (hb - 0.5) * 0.16) * mix(0.7, 1.0, m.x * m.y);
+      // Top edge of each brick catches the light, the bottom sits in shadow.
+      brick *= 1.0 + 0.05 * (f.y - 0.5) * m.x;
+      shade = mix(1.0 + (hb - 0.5) * 0.05, brick, detail);
+      // Fine grain.
+      shade *= 1.0 + (bxHash(floor(uv * 37.0)) - 0.5) * 0.05 * detail;
     } else {
-      float row = floor(uv.y / 0.96);
-      vec2 f = vec2(fract(uv.x / 3.2 + mod(row, 2.0) * 0.5), fract(uv.y / 0.96));
-      shade *= 1.0 - 0.2 * min(1.0, step(f.y, 0.03) + step(f.x, 0.008));
-      shade *= 1.0 + 0.06 * smoothstep(0.2, 1.0, f.y);
+      // Small parts (furniture, trim): just a fine moulding grain.
+      shade *= 1.0 + (bxHash(floor(uv * 30.0)) - 0.5) * 0.04;
     }` : `
     if (floorish) {
       vec2 f = fract(uv);
@@ -307,10 +355,53 @@ ${TOY ? `
       shade *= 1.0 - 0.1 * min(1.0, step(f.y, 0.07) + step(f.x, 0.02));
     }`}
     float fade = clamp(1.0 - length(vBxPos - cameraPosition) / 140.0, 0.0, 1.0);
-    diffuseColor.rgb *= mix(1.0, shade, fade);
-  }`);
-  };
-  return m;
+    diffuseColor.rgb *= mix(1.0, shade, fade);`);
+}
+
+/** Skyscraper glass: glossy, each pane a slightly different shade, lighter towards its top (sky reflection). */
+function curtainGlassMaterial() {
+  const m = new MeshStandardMaterial({ roughness: 0.14, metalness: 0.05 });
+  return worldPosMaterial(m, `
+    vec3 an = abs(vBxN);
+    if (an.y < 0.5) {
+      vec2 uv = an.x > 0.5 ? vBxPos.zy : vBxPos.xy;
+      vec2 q = vec2(uv.x / 2.2, uv.y / 3.4);
+      vec2 f = fract(q);
+      float p = bxHash(floor(q) + 3.0);
+      float shade = 0.95 + p * 0.1 + 0.3 * f.y * f.y;
+      // A few windows have the blinds down.
+      if (p > 0.9) shade = 0.8;
+      diffuseColor.rgb *= shade;
+    }`);
+}
+
+/**
+ * Streets and pavements: asphalt gets grit and patched squares, pale paving gets slab joints. Told
+ * apart by colour (dark and grey = asphalt, light and grey = paving; coloured = left alone).
+ */
+function pavingMaterial() {
+  const m = new MeshLambertMaterial({ polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
+  return worldPosMaterial(m, `
+    vec3 c = diffuseColor.rgb;
+    float mx = max(c.r, max(c.g, c.b)), mn = min(c.r, min(c.g, c.b));
+    float lum = dot(c, vec3(0.3, 0.59, 0.11));
+    vec2 uv = vBxPos.xz;
+    float fade = clamp(1.0 - length(vBxPos - cameraPosition) / 120.0, 0.0, 1.0);
+    if (mx - mn < 0.12 * mx + 0.02) {
+      float shade = 1.0;
+      if (lum < 0.12) {
+        shade = 1.0 + (bxHash(floor(uv * 14.0)) - 0.5) * 0.22;
+        shade *= 1.0 + (bxHash(floor(uv / 3.0)) - 0.5) * 0.12;
+      } else {
+        vec2 q = uv / 1.2;
+        vec2 f = fract(q), fw = fwidth(q);
+        vec2 j = 0.03 + fw;
+        float joint = smoothstep(0.0, j.x, f.x) * smoothstep(0.0, j.x, 1.0 - f.x) * smoothstep(0.0, j.y, f.y) * smoothstep(0.0, j.y, 1.0 - f.y);
+        float detail = 1.0 - smoothstep(0.1, 0.35, max(fw.x, fw.y));
+        shade = mix(1.0, (1.0 + (bxHash(floor(q)) - 0.5) * 0.1) * mix(0.8, 1.0, joint), detail);
+      }
+      diffuseColor.rgb *= mix(1.0, shade, fade);
+    }`);
 }
 
 /**
@@ -436,6 +527,9 @@ export class GameMap {
   vaultSpots: Vector3[] = [];
   /** k: 0 pine, 1 spruce, 2 oak, 3 birch, 4 autumn maple, 5 dead tree. */
   trees: { x: number; y: number; z: number; r: number; k: number }[] = [];
+  /** Battlefield: things still burning (size ~1) and scorched ground around craters and wrecks. */
+  fires: { x: number; y: number; z: number; s: number }[] = [];
+  private scorchGrid = new Map<number, { x: number; z: number; r: number }[]>();
   bushes: { x: number; y: number; z: number; r: number }[] = [];
   padSpots: Vector3[] = [];
   turbineSpots: Spot[] = [];
@@ -509,8 +603,10 @@ export class GameMap {
     yield 'Planting forests';
     this.generateScatter();
     if (TOY) this.placeToys();
+    if (THEME !== 'western') this.placeStreetFurniture();
     yield 'Assembling meshes';
     this.buildMeshes();
+    this.buildLamps();
     yield 'Drawing the map';
     this.mapCanvas = this.drawMapCanvas();
   }
@@ -743,6 +839,7 @@ export class GameMap {
       this.placeCheckpoints();
     }
     if (THEME === 'park') this.swanBoats();
+    if (TOY) this.placeCheckpoints();
     this.buildDam();
   }
 
@@ -799,7 +896,7 @@ export class GameMap {
         else if (r < 0.68) this.tryBunker(x, z);
         else if (r < 0.73) this.tryWaterTower(x, z);
         else if (r < 0.78) this.tryTank(x, z);
-        else if (r < 0.83) this.tryWesternHouse(x, z);
+        else if (r < 0.83) void (TOY ? this.tryCamoNet(x, z) : this.tryWesternHouse(x, z));
         else if (r < 0.88) this.tryRadarDome(x, z);
         else if (r < 0.93) this.trySilo(x, z);
         else this.tryRadioTower(x, z);
@@ -822,8 +919,201 @@ export class GameMap {
     this.placeZiplines();
   }
 
+  /** Street lamps: where the arm ends (the light) and where the post stands. */
+  lamps: { x: number; y: number; z: number }[] = [];
+  /** Candidate lamp corners inside cities (checked once the blocks are built). */
+  private lampCorners: { x: number; z: number; ax: number; az: number }[] = [];
+
+  /** Lamp posts along the roads between towns (alternating sides) and on city street corners. */
+  private placeStreetLamps() {
+    const lamp = (x: number, z: number, ax: number, az: number) => {
+      const y = this.terrain.heightAt(x, z);
+      if (y < 1 || this.isWater(x, z) || !this.inBounds({ x0: x - 1, z0: z - 1, x1: x + 1, z1: z + 1 })) return;
+      const r = { x0: x - 0.3, z0: z - 0.3, x1: x + 0.3, z1: z + 0.3 };
+      if (this.overlapsOccupied(r, 0.4)) return;
+      this.occupied.push(r);
+      const P = 0x3d4a2c; // dark olive plastic
+      this.addSolid(x - 0.12, y - 0.3, z - 0.12, x + 0.12, y + 5.3, z + 0.12, P);
+      this.addSolid(x - 0.22, y - 0.3, z - 0.22, x + 0.22, y + 0.45, z + 0.22, P);
+      const ex = x + ax * 1.3, ez = z + az * 1.3;
+      this.addSolid(Math.min(x, ex) - 0.07, y + 5.15, Math.min(z, ez) - 0.07, Math.max(x, ex) + 0.07, y + 5.3, Math.max(z, ez) + 0.07, P, false);
+      this.lamps.push({ x: ex, y: y + 5.05, z: ez });
+    };
+    for (const r of this.roads) {
+      const len = Math.hypot(r.x1 - r.x0, r.z1 - r.z0);
+      if (len < 30) continue;
+      const ux = (r.x1 - r.x0) / len, uz = (r.z1 - r.z0) / len;
+      let side = 1;
+      for (let d = 14; d < len - 10; d += 30) {
+        const x = r.x0 + ux * d - uz * side * 5.6, z = r.z0 + uz * d + ux * side * 5.6;
+        lamp(x, z, uz * side, -ux * side);
+        side = -side;
+      }
+    }
+    for (const c of this.lampCorners) lamp(c.x, c.z, c.ax, c.az);
+  }
+
+  /** Dragon's teeth: two staggered rows of stepped concrete pyramids (tank traps, good low cover). */
+  private scorch(x: number, z: number, r: number) {
+    const s = { x, z, r };
+    for (let ix = Math.floor((x - r) / 32); ix <= Math.floor((x + r) / 32); ix++) {
+      for (let iz = Math.floor((z - r) / 32); iz <= Math.floor((z + r) / 32); iz++) {
+        const k = ix * 4096 + iz, list = this.scorchGrid.get(k);
+        if (list) list.push(s);
+        else this.scorchGrid.set(k, [s]);
+      }
+    }
+  }
+
+  /** 0..1: how burnt the ground is here (ragged edges from noise). */
+  private scorchAt(x: number, z: number) {
+    const list = this.scorchGrid.get(Math.floor(x / 32) * 4096 + Math.floor(z / 32));
+    if (!list) return 0;
+    let k = 0;
+    for (const s of list) {
+      const d = Math.hypot(x - s.x, z - s.z) / s.r;
+      if (d < 1.3) k = Math.max(k, clamp((1.15 - d + (this.noiseB(x * 0.3, z * 0.3) - 0.5) * 0.5) * 1.6, 0, 0.88));
+    }
+    return k;
+  }
+
+  /**
+   * The battlefield: burnt-out cars along the roads and in the fields (many still burning), shell
+   * craters with thrown-up earth, rubble and burning barrels in the streets.
+   */
+  private placeWarzone() {
+    const rng = this.rng;
+    for (const r of this.roads) {
+      const len = Math.hypot(r.x1 - r.x0, r.z1 - r.z0);
+      if (len < 30) continue;
+      const dx = (r.x1 - r.x0) / len, dz = (r.z1 - r.z0) / len;
+      for (let u = rand(rng, 40, 160); u < len - 12; u += rand(rng, 220, 420)) {
+        const side = rng() < 0.5 ? -1 : 1, off = rand(rng, 3.6, 5.2);
+        this.carWreck(r.x0 + dx * u - dz * side * off, r.z0 + dz * u + dx * side * off, rng() < 0.2);
+      }
+    }
+    // Out in the fields: wrecks in twos and threes, where a column got hit.
+    for (let i = 0, n = 0; i < 500 && n < 8; i++) {
+      const x = rand(rng, -440, 440), z = rand(rng, -440, 440);
+      if (this.terrain.heightAt(x, z) < 2 || this.poiAt(x, z) || this.nearRoad(x, z, 8)) continue;
+      let any = false;
+      for (let k = 0; k < 1 + Math.floor(rng() * 3); k++) any = this.carWreck(x + rand(rng, -9, 9), z + rand(rng, -9, 9), rng() < 0.2) || any;
+      if (any) n++;
+    }
+    // Shell craters: a black burn with clods of earth thrown round the rim.
+    for (let i = 0, n = 0; i < 900 && n < 40; i++) {
+      const x = rand(rng, -470, 470), z = rand(rng, -470, 470), y = this.terrain.heightAt(x, z);
+      if (y < 1.6 || this.nearRoad(x, z, 5)) continue;
+      const poi = this.poiAt(x, z);
+      if (poi && Math.hypot(poi.x - x, poi.z - z) < poi.radius * 0.85) continue;
+      const R = rand(rng, 2.8, 6.5);
+      if (this.overlapsOccupied({ x0: x - R, z0: z - R, x1: x + R, z1: z + R }, 0.5)) continue;
+      this.scorch(x, z, R * 1.5);
+      const clods = 6 + Math.floor(R * 1.5);
+      for (let c = 0; c < clods; c++) {
+        const a = (c / clods) * Math.PI * 2 + rand(rng, -0.2, 0.2), d = R * rand(rng, 0.85, 1.15);
+        const cx = x + Math.cos(a) * d, cz = z + Math.sin(a) * d, cy = this.terrain.heightAt(cx, cz), s = rand(rng, 0.3, 0.7);
+        this.addSolid(cx - s, cy - 0.3, cz - s * 0.8, cx + s, cy + s * 0.7, cz + s * 0.8, pick(rng, [0x4a3d33, 0x3b332c, 0x5a5048]), false);
+      }
+      n++;
+    }
+    // Towns: rubble heaps, scorch marks and burning oil drums.
+    for (const poi of this.pois) {
+      const want = poi.size === 'city' ? 3 : 1;
+      for (let i = 0, n = 0; i < want * 8 && n < want; i++) {
+        const a = rng() * Math.PI * 2, d = Math.sqrt(rng()) * poi.radius * 0.9;
+        const x = poi.x + Math.cos(a) * d, z = poi.z + Math.sin(a) * d;
+        if (this.overlapsOccupied({ x0: x - 1.6, z0: z - 1.6, x1: x + 1.6, z1: z + 1.6 }, 0.3)) continue;
+        const y = this.terrain.heightAt(x, z);
+        if (y < 1) continue;
+        this.scorch(x, z, rand(rng, 3, 6));
+        if (rng() < 0.25) {
+          // Oil drum on fire.
+          this.addSolid(x - 0.32, y - 0.1, z - 0.32, x + 0.32, y + 0.95, z + 0.32, pick(rng, [0x6b3a22, 0x7a4a2a, 0x3a302a]));
+          this.fires.push({ x, y: y + 1.0, z, s: 0.55 });
+        } else {
+          // Rubble: broken blocks of concrete and brick.
+          for (let k = 0; k < 7; k++) {
+            const bx = x + rand(rng, -1.3, 1.3), bz = z + rand(rng, -1.3, 1.3), s = rand(rng, 0.2, 0.55), h = rand(rng, 0.2, 0.7);
+            this.addSolid(bx - s, y - 0.2, bz - s * 0.7, bx + s, y + h, bz + s * 0.7, pick(rng, [0x6e675e, 0x4f4a44, 0x5a5048, 0x7a4a2a]), k < 3);
+          }
+
+        }
+        this.occupied.push({ x0: x - 1.6, z0: z - 1.6, x1: x + 1.6, z1: z + 1.6 });
+        n++;
+      }
+    }
+  }
+
+  /** A burnt-out car: soot-black shell, rust, a gutted cabin and bare wheel hubs. */
+  private carWreck(x: number, z: number, burning: boolean) {
+    const rng = this.rng, swap = rng() < 0.5;
+    const rect = swap ? { x0: x - 1.2, z0: z - 2.4, x1: x + 1.2, z1: z + 2.4 } : { x0: x - 2.4, z0: z - 1.2, x1: x + 2.4, z1: z + 1.2 };
+    if (!this.inBounds(rect) || this.overlapsOccupied(rect, 0.6)) return false;
+    let y = Infinity;
+    for (const [cx, cz] of [[rect.x0, rect.z0], [rect.x1, rect.z0], [rect.x0, rect.z1], [rect.x1, rect.z1], [x, z]]) y = Math.min(y, this.terrain.heightAt(cx, cz));
+    if (y < 0.8) return false;
+    this.occupied.push(rect);
+    const box = this.builder(x, z, swap, y - 0.08), body = pick(rng, WRECK_BODY), f = rng() < 0.5 ? 1 : -1;
+    box(-2.1, 0.3, -0.88, 2.1, 0.95, 0.88, body);
+    box(-2.13, 0.5, -0.9, -0.2 + rng(), 0.8, 0.9, 0x6b3a22, false); // rust streak
+    box(-0.9 * f, 0.95, -0.76, 1.0 * f, 1.12, 0.76, 0x1c1b1a); // gutted cabin floor
+    box(-0.95 * f, 1.12, -0.8, -0.8 * f, 1.62, -0.66, body, false); // pillars
+    box(-0.95 * f, 1.12, 0.66, -0.8 * f, 1.62, 0.8, body, false);
+    box(0.85 * f, 1.12, -0.8, 1.0 * f, 1.62, -0.66, body, false);
+    box(0.85 * f, 1.12, 0.66, 1.0 * f, 1.62, 0.8, body, false);
+    box(-1.0 * f, 1.58, -0.82, 1.05 * f, 1.7, 0.82, body); // caved-in roof
+    for (const wx of [-1.35, 1.35]) for (const wz of [-0.92, 0.92]) box(wx - 0.3, 0, wz - 0.12, wx + 0.3, 0.55, wz + 0.12, 0x1c1b1a, false);
+    this.scorch(x, z, burning ? 6 : 4);
+    if (burning) {
+      const at = this.local(x, z, swap, y, (1.5 + rng() * 0.3) * f, 0, 0);
+      this.fires.push({ x: at.x, y: y + 1.0, z: at.z, s: rand(rng, 0.9, 1.3) });
+    }
+    return true;
+  }
+
+  private coverTeeth(x: number, z: number) {
+    const lot = this.claim(x, z, 15, 5, 2);
+    if (!lot) return false;
+    const { box } = this.site(x, z, lot.y);
+    for (let row = 0; row < 2; row++) {
+      for (let i = 0; i < 6 - row; i++) {
+        const cx = -6 + i * 2.4 + row * 1.2, cz = row ? 1.2 : -1.2;
+        box(cx - 0.62, -0.3, cz - 0.62, cx + 0.62, 0.5, cz + 0.62, 0xa9a79c);
+        box(cx - 0.42, 0.5, cz - 0.42, cx + 0.42, 0.95, cz + 0.42, 0xa9a79c);
+        box(cx - 0.22, 0.95, cz - 0.22, cx + 0.22, 1.3, cz + 0.22, 0xa9a79c);
+      }
+    }
+    return true;
+  }
+
+  /** Sandbag wall with a gap, barbed wire on posts in front and a couple of ammo crates behind. */
+  private coverBarricade(x: number, z: number) {
+    const rng = this.rng, lot = this.claim(x, z, 11, 6, 2);
+    if (!lot) return false;
+    const { box } = this.site(x, z, lot.y);
+    const gap = rand(rng, -2, 2);
+    for (let layer = 0; layer < 3; layer++) {
+      for (let i = 0; i < 9; i++) {
+        const cx = -4.4 + i * 1.0 + (layer % 2) * 0.5;
+        if (Math.abs(cx - gap) < 0.8 || cx > 4.6) continue;
+        const bag = pick(rng, [0xb3a37a, 0xa8986c, 0xbcad84]);
+        box(cx - 0.47, (layer ? 0 : -0.3) + layer * 0.36, -0.28, cx + 0.47, 0.36 + layer * 0.36, 0.28, bag);
+      }
+    }
+    for (let px = -4.5; px <= 4.6; px += 1.8) {
+      box(px - 0.05, -0.2, 2.1, px + 0.05, 1.0, 2.2, 0x5a4a3a, false);
+    }
+    for (const h of [0.35, 0.7]) box(-4.5, h, 2.12, 4.5, h + 0.04, 2.18, 0x6a6e70, false);
+    box.prop('crate', -3.6, 0, -1.6, -2.6, 0.8, -0.8, 0x5d6b3a);
+    box.prop('crate', 2.2, 0, -1.7, 3.0, 0.6, -1.0, 0x5d6b3a);
+    return true;
+  }
+
   private generateScatter() {
     const rng = this.rng;
+    this.placeStreetLamps();
+    if (TOY) this.placeWarzone();
     this.placeFieldCover();
 
     // Trees
@@ -915,6 +1205,7 @@ export class GameMap {
       const half = Math.sqrt(poi.radius ** 2 - s * s);
       this.addDecal(poi.x - half, poi.z + s - street / 2, poi.x + half, poi.z + s + street / 2, poi.y, ASPHALT);
       this.addDecal(poi.x + s - street / 2, poi.z - half, poi.x + s + street / 2, poi.z + half, poi.y, ASPHALT);
+      if (THEME !== 'western') this.streetMarkings(poi, s, half, P, street);
     }
     for (let i = -n; i <= n; i++) {
       for (let j = -n; j <= n; j++) {
@@ -922,6 +1213,17 @@ export class GameMap {
         if (Math.hypot(i * P, j * P) + block * 0.6 > poi.radius) continue;
         const bx0 = cx - block / 2, bz0 = cz - block / 2, bx1 = cx + block / 2, bz1 = cz + block / 2;
         this.addDecal(bx0, bz0, bx1, bz1, poi.y, THEME === 'western' ? 0xb8986a : 0xb9b5ab, 0.035); // sidewalk slab
+        if (THEME !== 'western') {
+          // Kerbs round the pavement (a low lip, walked over), and the block remembered for street furniture.
+          const k = 0.22, ky = poi.y + 0.12;
+          this.addSolid(bx0, poi.y - 0.2, bz0, bx1, ky, bz0 + k, KERB, false);
+          this.addSolid(bx0, poi.y - 0.2, bz1 - k, bx1, ky, bz1, KERB, false);
+          this.addSolid(bx0, poi.y - 0.2, bz0 + k, bx0 + k, ky, bz1 - k, KERB, false);
+          this.addSolid(bx1 - k, poi.y - 0.2, bz0 + k, bx1, ky, bz1 - k, KERB, false);
+          this.cityBlocks.push({ x: cx, z: cz, h: block / 2, y: poi.y, plaza: i === 0 && j === 0 });
+        }
+        // Street lamps on two opposite corners of each block, arms out over the street.
+        for (const [sx, sz] of [[-1, -1], [1, 1]]) this.lampCorners.push({ x: cx + sx * (block / 2 - 0.45), z: cz + sz * (block / 2 - 0.45), ax: sx * 0.7071, az: sz * 0.7071 });
         if (i === 0 && j === 0) {
           this.plaza(cx, cz, poi.y, block);
           continue;
@@ -977,6 +1279,39 @@ export class GameMap {
     }
     this.inCity = false;
   }
+
+  /**
+   * Paint on one city street pair (the street along X at z = s and the one along Z at x = s): dashed
+   * yellow centre lines between the junctions and zebra crossings on each side of every junction.
+   */
+  private streetMarkings(poi: POI, s: number, half: number, P: number, street: number) {
+    const y = poi.y, Y = 0xf2c230, W = 0xf4f4f0;
+    // Along X at z = poi.z + s; mirrored for the street along Z.
+    const put = (a0: number, b0: number, a1: number, b1: number, color: number, alongX: boolean) => {
+      if (alongX) this.addDecal(poi.x + a0, poi.z + b0, poi.x + a1, poi.z + b1, y, color, 0.05);
+      else this.addDecal(poi.x + b0, poi.z + a0, poi.x + b1, poi.z + a1, y, color, 0.05);
+    };
+    for (const alongX of [true, false]) {
+      // Centre dashes, stopping short of each junction.
+      for (let t = -half + 3; t < half - 3; t += 5) {
+        const k = (t + 1.25) / P - 0.5, d = Math.abs(k - Math.round(k)) * P;
+        if (d < street / 2 + 4) continue;
+        put(t, s - 0.09, t + 2.5, s + 0.09, Y, alongX);
+      }
+      // Crossings: stripes across the street just outside each junction.
+      for (let m = -Math.ceil(half / P); m <= Math.ceil(half / P); m++) {
+        const jc = (m + 0.5) * P;
+        if (Math.abs(jc) > half - 6 || Math.hypot(jc, s) > poi.radius - 4) continue;
+        for (const side of [-1, 1]) {
+          const a = jc + side * (street / 2 + 0.4), b = a + side * 2.2;
+          for (let w = -street / 2 + 0.7; w < street / 2 - 0.5; w += 0.95) put(Math.min(a, b), s + w, Math.max(a, b), s + w + 0.5, W, alongX);
+        }
+      }
+    }
+  }
+
+  /** City blocks (centre, half size, pavement height): street furniture goes round their edges. */
+  private cityBlocks: { x: number; z: number; h: number; y: number; plaza: boolean }[] = [];
 
   private populateTown(poi: POI) {
     const rng = this.rng;
@@ -1175,12 +1510,12 @@ export class GameMap {
 
   private addTree(x: number, z: number, r: number, kind?: number) {
     const y = this.terrain.heightAt(x, z), q = this.rng();
-    const mix = THEME === 'western' ? [0.04, 0.04, 0.08, 0.08, 0.08, 0.3, 1] : THEME === 'military' ? [0.45, 0.75, 0.85, 0.9, 0.9, 1] : THEME === 'park' ? [0.2, 0.3, 0.6, 0.7, 0.8, 1] : [0.3, 0.48, 0.73, 0.86, 0.95, 1];
+    const mix = TOY ? [0.3, 0.5, 0.78, 0.9, 0.96, 1] : THEME === 'western' ? [0.04, 0.04, 0.08, 0.08, 0.08, 0.3, 1] : THEME === 'military' ? [0.45, 0.75, 0.85, 0.9, 0.9, 1] : THEME === 'park' ? [0.2, 0.3, 0.6, 0.7, 0.8, 1] : [0.3, 0.48, 0.73, 0.86, 0.95, 1];
     const k = kind ?? mix.findIndex((m) => q < m);
     this.trees.push({ x, y, z, r, k });
     // Trunk: the solid part (cover, blocks bullets). Canopies are visual only.
     const [w, h, col] = ([[0.3, 3.2, 0x6b4a2f], [0.3, 3.6, 0x5a3d26], [0.4, 3.0, 0x6e4b30], [0.2, 4.4, 0xe4dfd4], [0.38, 3.0, 0x5e4130], [0.26, 5.2, 0x7a6a5a], [0.38, 3.6, 0x4f7a3a]] as const)[k];
-    this.addSolid(x - w, y - 0.5, z - w, x + w, y + h, z + w, col);
+    this.addSolid(x - w, y - 0.5, z - w, x + w, y + h, z + w, TOY && k === 5 ? 0x3a302a : col);
     if (k === 6) {
       // Cactus arms: out and up.
       for (const [s, ay] of [[1, 1.4 + this.rng() * 0.6], [-1, 2.0 + this.rng() * 0.6]] as const) {
@@ -1203,8 +1538,8 @@ export class GameMap {
       // Bare branches sticking out at different heights.
       for (let i = 0; i < 4; i++) {
         const by = y + 2.2 + i * 0.75, len = 0.9 + this.rng() * 1.1, t = 0.09;
-        if (i % 2 === 0) this.addSolid(x + (i % 4 === 0 ? w : -w - len), by, z - t, x + (i % 4 === 0 ? w + len : -w), by + t * 2, z + t, 0x6a5a4a, false);
-        else this.addSolid(x - t, by, z + (i % 4 === 1 ? w : -w - len), x + t, by + t * 2, z + (i % 4 === 1 ? w + len : -w), 0x6a5a4a, false);
+        if (i % 2 === 0) this.addSolid(x + (i % 4 === 0 ? w : -w - len), by, z - t, x + (i % 4 === 0 ? w + len : -w), by + t * 2, z + t, TOY ? 0x2b2825 : 0x6a5a4a, false);
+        else this.addSolid(x - t, by, z + (i % 4 === 1 ? w : -w - len), x + t, by + t * 2, z + (i % 4 === 1 ? w + len : -w), TOY ? 0x2b2825 : 0x6a5a4a, false);
       }
     }
   }
@@ -1215,15 +1550,17 @@ export class GameMap {
    */
   private placeFieldCover() {
     const rng = this.rng;
-    const kinds = ['hut', 'hut', 'trench', 'trench', 'pen', 'outpost', 'woodshed'] as const;
+    const kinds = TOY ? ['hut', 'trench', 'trench', 'outpost', 'outpost', 'teeth', 'teeth', 'barricade', 'barricade', 'woodshed'] as const
+      : ['hut', 'hut', 'trench', 'trench', 'pen', 'outpost', 'woodshed'] as const;
     let placed = 0;
-    for (let i = 0; i < 1400 && placed < 95; i++) {
+    for (let i = 0; i < 1400 && placed < (TOY ? 125 : 95); i++) {
       const x = rand(rng, -465, 465), z = rand(rng, -465, 465);
       if (this.terrain.heightAt(x, z) < 2) continue;
       if (this.poiAt(x, z) || this.pois.some((p) => Math.hypot(p.x - x, p.z - z) < p.radius + 14)) continue;
       const kind = pick(rng, kinds);
       const ok = kind === 'hut' ? this.coverHut(x, z) : kind === 'trench' ? this.coverTrench(x, z)
-        : kind === 'pen' ? this.coverPen(x, z) : kind === 'outpost' ? this.coverOutpost(x, z) : this.coverWoodshed(x, z);
+        : kind === 'pen' ? this.coverPen(x, z) : kind === 'outpost' ? this.coverOutpost(x, z)
+        : kind === 'teeth' ? this.coverTeeth(x, z) : kind === 'barricade' ? this.coverBarricade(x, z) : this.coverWoodshed(x, z);
       if (ok) placed++;
     }
   }
@@ -1413,6 +1750,8 @@ export class GameMap {
       this.doors.push({ ...b, alongX: b.maxX - b.minX > b.maxZ - b.minZ });
     };
     fn.glass = (x0, y0, z0, x1, y1, z1) => this.glass.push(world(x0, y0, z0, x1, y1, z1));
+    // Collision only, nothing drawn.
+    fn.hit = (x0, y0, z0, x1, y1, z1) => this.world.add(world(x0, y0, z0, x1, y1, z1));
     fn.prop = (kind, x0, y0, z0, x1, y1, z1, color) => {
       const b = world(x0, y0, z0, x1, y1, z1);
       this.addProp(kind, b.minX, b.minY, b.minZ, b.maxX, b.maxY, b.maxZ, color);
@@ -1447,10 +1786,48 @@ export class GameMap {
       piece(o.a, o.b, y0 + o.top, y0 + h);
       // Person-sized doorways get a door; raised openings get a pane of glass.
       if (o.bottom === 0 && o.b - o.a <= 1.8 && o.top <= 2.7 && !o.open) pane(box.door, o.a + 0.02, o.b - 0.02, y0 + 0.02, y0 + o.top - 0.02, 0.1);
-      else if (o.bottom > 0.3 && !o.open) pane(box.glass, o.a, o.b, y0 + o.bottom, y0 + o.top, 0.06);
+      else if (o.bottom > 0.3 && !o.open) {
+        pane(box.glass, o.a, o.b, y0 + o.bottom, y0 + o.top, 0.06);
+        this.windowFrame(box, alongX, c, t, o.a, o.b, y0 + o.bottom, y0 + o.top);
+      }
       cur = o.b;
     }
     piece(cur, s1, y0, y0 + h);
+  }
+
+  /**
+   * A 3D window: white frame standing proud of the wall on both faces, a deep sill underneath and
+   * glazing bars across the glass (visual only; the pane still breaks).
+   */
+  private windowFrame(box: Builder, alongX: boolean, c: number, t: number, a: number, b: number, y0: number, y1: number) {
+    const put = (s0: number, s1: number, ya: number, yb: number, depth: number, color: number) => {
+      if (alongX) box(s0, ya, c - depth / 2, s1, yb, c + depth / 2, color, false);
+      else box(c - depth / 2, ya, s0, c + depth / 2, yb, s1, color, false);
+    };
+    const f = 0.09, d = t + 0.12;
+    put(a - f, a, y0, y1, d, TRIM);
+    put(b, b + f, y0, y1, d, TRIM);
+    put(a - f, b + f, y1, y1 + f, d, TRIM);
+    put(a - 0.16, b + 0.16, y0 - 0.1, y0, t + 0.3, SILL);
+    if (y1 - y0 > 0.9) {
+      put((a + b) / 2 - 0.035, (a + b) / 2 + 0.035, y0, y1, 0.1, TRIM);
+      if (b - a > 1) put(a, b, y0 + (y1 - y0) * 0.58 - 0.035, y0 + (y1 - y0) * 0.58 + 0.035, 0.1, TRIM);
+    }
+  }
+
+  /** Railing: posts, a top rail and a mid rail between two points (local), with an invisible wall to stop falls. */
+  private railing(box: Builder, x0: number, z0: number, x1: number, z1: number, y: number, collide = true) {
+    const alongX = Math.abs(x1 - x0) > Math.abs(z1 - z0), len = alongX ? Math.abs(x1 - x0) : Math.abs(z1 - z0);
+    const n = Math.max(1, Math.round(len / 1.2));
+    for (let i = 0; i <= n; i++) {
+      const px = lerp(x0, x1, i / n), pz = lerp(z0, z1, i / n);
+      box(px - 0.04, y, pz - 0.04, px + 0.04, y + 1.0, pz + 0.04, RAILING, false);
+    }
+    const lo = (v0: number, v1: number) => Math.min(v0, v1), hi = (v0: number, v1: number) => Math.max(v0, v1);
+    for (const [ya, yb] of [[y + 0.96, y + 1.06], [y + 0.5, y + 0.55]]) {
+      box(lo(x0, x1) - 0.04, ya, lo(z0, z1) - 0.04, hi(x0, x1) + 0.04, yb, hi(z0, z1) + 0.04, RAILING, false);
+    }
+    if (collide) box.hit(lo(x0, x1) - 0.05, y, lo(z0, z1) - 0.05, hi(x0, x1) + 0.05, y + 1.06, hi(z0, z1) + 0.05, 0);
   }
 
   private windowsFor(s0: number, s1: number, count: number): Opening[] {
@@ -1488,19 +1865,146 @@ export class GameMap {
     const winCount = big ? 3 : 2;
 
     box(-hw, 0, -hd, hw, 0.1, hd, big ? 0x9a9186 : 0xb08a5e); // floor
+
+    // Floor plan, the same on every storey: a front room across the width (the stairs up its left
+    // side), a partition behind it, and the back split into two rooms. One-storey houses also
+    // get a small bathroom off the front room.
+    const IW = 0xece6dc, it = 0.16, ix0 = -hw + t / 2, ix1 = hw - t / 2, iz0 = -hd + t / 2, iz1 = hd - t / 2, multi = floors > 1;
+    const stairTop = zs + L + 0.9;
+    let zc: number, wallFrom = ix0;
+    if (multi && iz1 - stairTop >= 2.6) zc = rand(rng, stairTop, Math.min(stairTop + 0.8, iz1 - 2.6));
+    else if (multi) {
+      zc = clamp(rand(rng, -0.1, 0.2) * d, zs + 1, iz1 - 2.6);
+      wallFrom = stairsEnd;
+    } else zc = clamp(rand(rng, -0.1, 0.25) * d, iz0 + 3.2, iz1 - 2.6);
+    const hasBackDoor = rng() < 0.6;
+    // Back split, clear of the back door.
+    const xcs: number[] = [];
+    for (let v = wallFrom + 2.4; v <= ix1 - 2.4; v += 0.1) if (Math.abs(v) > 1.2) xcs.push(v);
+    const xc = xcs.length ? pick(rng, xcs) : null;
+    const doorC = rand(rng, Math.max(-hw + 2.5, stairsEnd + 1.3), hw - 2.2);
+    // One storey: a bathroom in the front corner away from the front door.
+    let xf: number | null = null;
+    if (!multi) {
+      const bw = rand(rng, 2.3, 2.7);
+      if (doorC - 1.1 > ix0 + bw) xf = ix0 + bw;
+      else if (doorC + 1.1 < ix1 - bw) xf = ix1 - bw;
+    }
+    const roomWindows = (s0: number, s1: number, cuts: number[]) => {
+      const out: Opening[] = [], edges = [s0, ...cuts.flatMap((c) => [c - it / 2 - 0.15, c + it / 2 + 0.15]), s1];
+      for (let i = 0; i < edges.length; i += 2) {
+        const a = edges[i] + 0.2, b = edges[i + 1] - 0.2, len = b - a;
+        if (len < 1.8) continue;
+        const n = big && len > 6 ? 2 : 1;
+        for (let k = 0; k < n; k++) {
+          const c = a + (len * (k + 1)) / (n + 1);
+          out.push({ a: c - 0.7, b: c + 0.7, bottom: 1.0, top: 2.2 });
+        }
+      }
+      return out;
+    };
+    let bathDone = false;
     for (let f = 0; f < floors; f++) {
       const y0 = f * H;
-      const doorC = rand(rng, Math.max(-hw + 2.5, stairsEnd + 1.3), hw - 2.2);
       const frontOpen: Opening[] = f === 0
         ? [{ a: doorC - 0.8, b: doorC + 0.8, bottom: 0, top: 2.5 }]
         : this.windowsFor(-hw, hw, winCount);
+      // Upper floors: now and then a balcony, its door in place of the window furthest from the stairs.
+      let balc: number | null = null;
+      if (f > 0 && rng() < 0.5) {
+        const k = frontOpen.length - 1, o = frontOpen[k], c = (o.a + o.b) / 2;
+        if (c - 0.8 > stairsEnd + 0.4 && c + 1.5 < hw) {
+          balc = c;
+          frontOpen[k] = { a: c - 0.6, b: c + 0.6, bottom: 0, top: 2.3 };
+          box(c - 1.45, y0 - 0.22, -hd - 1.4, c + 1.45, y0 + 0.02, -hd - t / 2, SILL);
+          this.railing(box, c - 1.4, -hd - 1.35, c + 1.4, -hd - 1.35, y0 + 0.02);
+          this.railing(box, c - 1.4, -hd - 1.35, c - 1.4, -hd - t / 2, y0 + 0.02);
+          this.railing(box, c + 1.4, -hd - 1.35, c + 1.4, -hd - t / 2, y0 + 0.02);
+        }
+      }
+      if (f === 0) {
+        // Front step and a little porch roof over the door.
+        box(doorC - 1.0, 0, -hd - 0.7, doorC + 1.0, 0.14, -hd - t / 2, SILL);
+        box(doorC - 1.15, 2.72, -hd - 1.0, doorC + 1.15, 2.86, -hd - t / 2, roofColor, false);
+        for (const s of [-1, 1]) box(doorC + s * 0.95 - 0.06, 2.3, -hd - 0.9, doorC + s * 0.95 + 0.06, 2.72, -hd - t / 2, TRIM, false);
+      }
       this.wall(box, true, -hw, hw, -hd, y0, H, t, frontOpen, wallColor);
-      const backOpen: Opening[] = f === 0 && rng() < 0.6
+      const backOpen: Opening[] = f === 0 && hasBackDoor
         ? [{ a: -0.8, b: 0.8, bottom: 0, top: 2.5 }]
-        : this.windowsFor(-hw, hw, winCount);
+        : roomWindows(-hw, hw, xc !== null ? [xc] : []);
       this.wall(box, true, -hw, hw, hd, y0, H, t, backOpen, wallColor);
-      this.wall(box, false, -hd + t / 2, hd - t / 2, -hw, y0, H, t, floors > 1 ? this.windowsFor(zs + L + 0.4, hd, 1) : this.windowsFor(-hd, hd, 2), wallColor);
-      this.wall(box, false, -hd + t / 2, hd - t / 2, hw, y0, H, t, this.windowsFor(-hd, hd, winCount), wallColor);
+      const leftOpen = multi ? roomWindows(zs + L + 0.4, hd, wallFrom === ix0 ? [zc] : []) : roomWindows(-hd, hd, [zc]);
+      const rightOpen = roomWindows(-hd, hd, [zc]);
+      this.wall(box, false, -hd + t / 2, hd - t / 2, -hw, y0, H, t, leftOpen, wallColor);
+      this.wall(box, false, -hd + t / 2, hd - t / 2, hw, y0, H, t, rightOpen, wallColor);
+
+      // Interior walls, doorways and furniture.
+      const ih = f < floors - 1 ? H - 0.26 : H - 0.01, fy = y0 + (f === 0 ? 0.1 : 0);
+      const keep: Rect2[] = [], win: Rect2[] = [];
+      const winRects = (ops: Opening[], alongX: boolean, c: number, inward: number) => {
+        for (const o of ops) {
+          if (o.bottom <= 0.3) continue;
+          const v0 = Math.min(c, c + inward), v1 = Math.max(c, c + inward);
+          win.push(alongX ? { x0: o.a - 0.1, x1: o.b + 0.1, z0: v0, z1: v1 } : { z0: o.a - 0.1, z1: o.b + 0.1, x0: v0, x1: v1 });
+        }
+      };
+      winRects(frontOpen, true, -hd, 0.9);
+      winRects(backOpen, true, hd, -0.9);
+      winRects(leftOpen, false, -hw, 0.9);
+      winRects(rightOpen, false, hw, -0.9);
+      if (multi) keep.push({ x0: -hw, x1: stairsEnd + 1.2, z0: -hd, z1: zc });
+      if (balc !== null) keep.push({ x0: balc - 0.9, x1: balc + 0.9, z0: -hd, z1: -hd + 1.6 });
+      if (f === 0) {
+        keep.push({ x0: doorC - 1.0, x1: doorC + 1.0, z0: -hd, z1: -hd + 1.6 });
+        if (multi) keep.push({ x0: -hw, x1: doorC + 1.0, z0: -hd, z1: -hd + 1.6 });
+        if (hasBackDoor) keep.push({ x0: -1.1, x1: 1.1, z0: hd - 1.6, z1: hd });
+      }
+      const upper = f > 0;
+      const kindL: RoomKind = big ? 'kitchen' : upper ? 'bedroom' : 'kitchen';
+      const narrowR = xc !== null && ix1 - xc < 3.3;
+      const kindR: RoomKind = big ? (narrowR ? 'bath' : 'bedroom')
+        : upper ? (narrowR || !bathDone ? 'bath' : 'bedroom')
+        : multi ? (narrowR ? 'bath' : 'dining') : 'bedroom';
+      const zcOpen: Opening[] = [];
+      const doorway = (lo: number, hi: number, open: boolean) => {
+        if (hi - lo < 0.2) return;
+        const c = rand(rng, lo, hi), half = open ? 0.75 : 0.55;
+        zcOpen.push({ a: c - half, b: c + half, bottom: 0, top: 2.3, open });
+        keep.push({ x0: c - 0.8, x1: c + 0.8, z0: zc - 1.1, z1: zc + 1.1 });
+      };
+      const dStart = Math.max(wallFrom, multi ? stairsEnd : ix0) + 0.9;
+      const rooms: [Rect2, RoomKind][] = [];
+      if (xc !== null) {
+        doorway(Math.min(dStart, xc - 1.0), xc - 0.9, kindL === 'kitchen');
+        doorway(xc + 0.9, ix1 - 0.9, kindR === 'dining');
+        rooms.push([{ x0: ix0, x1: xc - it / 2, z0: zc + it / 2, z1: iz1 }, kindL], [{ x0: xc + it / 2, x1: ix1, z0: zc + it / 2, z1: iz1 }, kindR]);
+        const xcOpen: Opening[] = [];
+        if (kindL === 'kitchen' && kindR === 'dining' && iz1 - zc > 2.6) {
+          const c = (zc + iz1) / 2;
+          xcOpen.push({ a: c - 0.7, b: c + 0.7, bottom: 0, top: 2.3, open: true });
+          keep.push({ x0: xc - 1.0, x1: xc + 1.0, z0: c - 0.8, z1: c + 0.8 });
+        }
+        this.wall(box, false, zc + it / 2, iz1, xc, y0, ih, it, xcOpen, IW);
+        if (kindR === 'bath') bathDone = true;
+      } else {
+        doorway(dStart, ix1 - 0.9, true);
+        rooms.push([{ x0: ix0, x1: ix1, z0: zc + it / 2, z1: iz1 }, upper ? 'bedroom' : 'kitchen']);
+      }
+      this.wall(box, true, wallFrom, ix1, zc, y0, ih, it, zcOpen, IW);
+
+      if (xf !== null && f === 0) {
+        // The little bathroom at the front, its door opening off the front room.
+        const left = xf < 0, c = rand(rng, iz0 + 0.9, zc - it / 2 - 0.9);
+        this.wall(box, false, iz0, zc - it / 2, xf, y0, ih, it, [{ a: c - 0.5, b: c + 0.5, bottom: 0, top: 2.3 }], IW);
+        keep.push({ x0: xf - 1.1, x1: xf + 1.1, z0: c - 0.7, z1: c + 0.7 });
+        rooms.push([left ? { x0: ix0, x1: xf - it / 2, z0: iz0, z1: zc - it / 2 } : { x0: xf + it / 2, x1: ix1, z0: iz0, z1: zc - it / 2 }, 'bath']);
+        rooms.push([left ? { x0: xf + it / 2, x1: ix1, z0: iz0, z1: zc - it / 2 } : { x0: ix0, x1: xf - it / 2, z0: iz0, z1: zc - it / 2 }, 'living']);
+      } else {
+        rooms.push([{ x0: ix0, x1: ix1, z0: iz0, z1: zc - it / 2 }, upper && !big ? 'study' : 'living']);
+      }
+      const placed: Placed[] = [];
+      for (const [r, k] of rooms) placed.push(...furnish(box, box.hit, r, k, fy, keep, win, rng));
+
       if (f > 0) {
         // Floor slab with a hole above the flight that arrives here.
         const [h0, h1] = (f - 1) % 2 === 0 ? [ax0, ax1] : [bx0, bx1 + 0.3];
@@ -1516,16 +2020,33 @@ export class GameMap {
           else box(bx0, y0, zs + L - (i + 1) * run, bx1, y0 + (i + 1) * rise, zs + L - i * run, 0x8a6a48);
         }
       }
+      // Loot: on a table, counter or bed now and then, otherwise on a clear bit of floor.
+      const surfaces = placed.filter((p) => p.surface);
       for (let i = 0; i < 2; i++) {
-        this.lootSpots.push(this.local(x, z, swap, lot.y, rand(rng, stairsEnd + 0.8, hw - 1), y0 + 0.12, rand(rng, -hd + 1, hd - 1)));
+        if (surfaces.length && rng() < 0.4) {
+          const s = surfaces.splice(Math.floor(rng() * surfaces.length), 1)[0];
+          this.lootSpots.push(this.local(x, z, swap, lot.y, (s.x0 + s.x1) / 2, s.top + 0.02, (s.z0 + s.z1) / 2));
+          continue;
+        }
+        for (let k = 0; k < 30; k++) {
+          const lx = rand(rng, stairsEnd + 0.8, hw - 1), lz = rand(rng, -hd + 1, hd - 1);
+          const onWall = Math.abs(lz - zc) < 0.5 || (xc !== null && lz > zc && Math.abs(lx - xc) < 0.5) || (xf !== null && f === 0 && lz < zc && Math.abs(lx - xf) < 0.5);
+          if (onWall || placed.some((p) => lx > p.x0 - 0.35 && lx < p.x1 + 0.35 && lz > p.z0 - 0.35 && lz < p.z1 + 0.35)) continue;
+          this.lootSpots.push(this.local(x, z, swap, lot.y, lx, fy + 0.02, lz));
+          break;
+        }
       }
-    }
-    if (floors === 1 && rng() < 0.5) {
-      // Interior divider with a doorway
-      this.wall(box, false, -hd + t, hd - t, rand(rng, -hw * 0.3, hw * 0.3), 0, H, 0.2, [{ a: -0.7, b: 0.7, bottom: 0, top: 2.3 }], 0xece6dc);
     }
     const top = floors * H;
     box(-hw - 0.4, top, -hd - 0.4, hw + 0.4, top + 0.3, hd + 0.4, roofColor);
+    if (floors >= 2) {
+      // Roof railing (no collision: the ziplines drop you over it onto the roof).
+      const rx = hw + 0.25, rz = hd + 0.25, ry = top + 0.3;
+      this.railing(box, -rx, -rz, rx, -rz, ry, false);
+      this.railing(box, -rx, rz, rx, rz, ry, false);
+      this.railing(box, -rx, -rz, -rx, rz, ry, false);
+      this.railing(box, rx, -rz, rx, rz, ry, false);
+    }
     if (floors >= 3) {
       const s = rng() < 0.5 ? -1 : 1, p = this.local(x, z, swap, lot.y, s * hw, 0, 0);
       this.climbSpots.push({ x: p.x, z: p.z, top: lot.y + top + 0.3, ox: swap ? 0 : s, oz: swap ? s : 0 });
@@ -1547,19 +2068,35 @@ export class GameMap {
     const lot = this.claim(x, z, w, d, 3);
     if (!lot) return false;
     const box = this.builder(x, z, false, lot.y);
-    const glass = pick(rng, GLASS_COLORS), frame = pick(rng, [0xd8d8d2, 0x9aa0a6, 0x55595e, 0xe6e0d4]);
+    const glass = TOY ? pick(rng, TOY_GLASS) : pick(rng, GLASS_COLORS), frame = TOY ? pick(rng, [TRIM, SILL, MULLION, KERB]) : pick(rng, [0xd8d8d2, 0x9aa0a6, 0x55595e, 0xe6e0d4]);
     const H = 3.4, floors = randInt(rng, Math.round(6 - edge * 3), Math.round(14 - edge * 6));
     const h = floors * H, hw = w / 2, hd = d / 2;
+    // Curtain wall: glass behind a grid of floor bands and window mullions standing out from it.
     const bands = (x0: number, z0: number, x1: number, z1: number, y0: number, y1: number) => {
       for (let y = y0 + H; y < y1 - 0.1; y += H) box(x0 - 0.15, y - 0.4, z0 - 0.15, x1 + 0.15, y, z1 + 0.15, frame, false);
+      const fins = (s0: number, s1: number, put: (s: number) => void) => {
+        const n = Math.max(2, Math.round((s1 - s0) / 2.2));
+        for (let i = 0; i <= n; i++) put(lerp(s0, s1, i / n));
+      };
+      const fy0 = y0, fw = 0.09, fo = 0.12;
+      fins(x0, x1, (s) => {
+        box(s - fw, fy0, z0 - fo, s + fw, y1, z0 + 0.05, frame, false);
+        box(s - fw, fy0, z1 - 0.05, s + fw, y1, z1 + fo, frame, false);
+      });
+      fins(z0, z1, (s) => {
+        box(x0 - fo, fy0, s - fw, x0 + 0.05, y1, s + fw, frame, false);
+        box(x1 - 0.05, fy0, s - fw, x1 + fo, y1, s + fw, frame, false);
+      });
     };
     box(-hw, 0, -hd, hw, h, hd, glass);
+    if (TOY) this.solids[this.solids.length - 1].glassy = true;
     bands(-hw, -hd, hw, hd, 0, h);
     box(-hw - 0.25, h, -hd - 0.25, hw + 0.25, h + 0.5, hd + 0.25, frame);
     let top = h + 0.5;
     if (rng() < 0.55) {
       const w2 = w * rand(rng, 0.5, 0.7), d2 = d * rand(rng, 0.5, 0.7), h2 = randInt(rng, 2, 6) * H;
       box(-w2 / 2, top, -d2 / 2, w2 / 2, top + h2, d2 / 2, glass);
+      if (TOY) this.solids[this.solids.length - 1].glassy = true;
       bands(-w2 / 2, -d2 / 2, w2 / 2, d2 / 2, top, top + h2);
       box(-w2 / 2 - 0.2, top + h2, -d2 / 2 - 0.2, w2 / 2 + 0.2, top + h2 + 0.4, d2 / 2 + 0.2, frame);
       top += h2 + 0.4;
@@ -2115,7 +2652,7 @@ export class GameMap {
     const st = this.builder(x, 0, false, 0);
     for (let i = 0; i < 11; i++) st(3.5, top - 4, z + 8.9 - (i + 1) * 0.45, 5.2, top - (i + 1) * 0.36, z + 8.9 - i * 0.45, conc);
     this.lootSpots.push(new Vector3(x, top + 0.1, z - 8), new Vector3(x, top + 0.1, z + 8), new Vector3(x + 6.2, top - 4 + 0.12, z));
-    this.landmarks.push({ name: 'Stormfall Dam', x, z });
+    this.landmarks.push({ name: 'Stormzone Dam', x, z });
     this.footprints.push({ x0: x - 3.5, z0: z0, x1: x + 14, z1: z1, color: '#bab6ab' });
     this.occupied.push({ x0: x - 5, z0: z0 - 4, x1: x + 16, z1: z1 + 4 });
   }
@@ -4338,10 +4875,91 @@ export class GameMap {
 
   // ---------- city blocks ----------
 
+  /** Town squares (centre, height, size). */
+  private plazas: { x: number; z: number; y: number; size: number }[] = [];
+  /** Hydrants, bins, benches, payphones, mailboxes, newspaper boxes and hot dog stands. */
+  private streetProps: { kind: StreetPropKind; x: number; y: number; z: number; yaw: number }[] = [];
+
+  /**
+   * Street furniture along the city pavements, down the roads through towns and round the squares.
+   * Its own random stream, so the rest of the island stays as it was.
+   */
+  private placeStreetFurniture() {
+    const rng = mulberry32(CONFIG.mapSeed + 4242);
+    const pickKind = (table: [StreetPropKind, number][]) => {
+      let r = rng() * table.reduce((s, t) => s + t[1], 0);
+      return (table.find((t) => (r -= t[1]) <= 0) ?? table[0])[0];
+    };
+    /** Places a prop facing (fx, fz) if the spot is clear; `free` skips the lot check (squares). */
+    const put = (kind: StreetPropKind, x: number, z: number, fx: number, fz: number, y?: number, free = false) => {
+      const [w, h, d] = STREET_PROP_SIZE[kind], yaw = Math.atan2(fx, fz);
+      const c = Math.abs(Math.cos(yaw)), s = Math.abs(Math.sin(yaw));
+      const hx = (w * c + d * s) / 2, hz = (w * s + d * c) / 2;
+      const gy = y ?? this.terrain.heightAt(x, z);
+      const r = { x0: x - hx, z0: z - hz, x1: x + hx, z1: z + hz };
+      if (gy < 0.8 || this.isWater(x, z) || !this.inBounds(r)) return false;
+      if (!free && this.occupied.some((o) => r.x0 - 0.3 < o.x1 && r.x1 + 0.3 > o.x0 && r.z0 - 0.3 < o.z1 && r.z1 + 0.3 > o.z0 && (o.x1 - o.x0 < 20 || o.z1 - o.z0 < 20))) return false;
+      if (this.world.anyOverlap(r.x0 - 0.15, gy + 0.08, r.z0 - 0.15, r.x1 + 0.15, gy + h + 0.3, r.z1 + 0.15)) return false;
+      if (this.doors.some((b) => r.x0 < b.maxX + 1.4 && r.x1 > b.minX - 1.4 && r.z0 < b.maxZ + 1.4 && r.z1 > b.minZ - 1.4 && b.minY < gy + 2)) return false;
+      if (this.vehicleSpots.some((v) => Math.hypot(v.x - x, v.z - z) < 4.5)) return false;
+      if (this.props.some((b) => r.x0 < b.maxX + 0.3 && r.x1 > b.minX - 0.3 && r.z0 < b.maxZ + 0.3 && r.z1 > b.minZ - 0.3 && b.minY < gy + h)) return false;
+      if (this.lootSpots.some((l) => Math.abs(l.x - x) < hx + 0.7 && Math.abs(l.z - z) < hz + 0.7 && Math.abs(l.y - gy) < 2)) return false;
+      if (this.streetProps.some((p) => Math.hypot(p.x - x, p.z - z) < 1.6 + (kind === 'hotdog' || p.kind === 'hotdog' ? 1.2 : 0))) return false;
+      this.world.add({ minX: r.x0, minY: gy - 0.2, minZ: r.z0, maxX: r.x1, maxY: gy + h, maxZ: r.z1 });
+      this.streetProps.push({ kind, x, y: gy, z, yaw });
+      return true;
+    };
+    const FRONT_OUT = new Set<StreetPropKind>(['bench', 'hydrant', 'bin']);
+
+    // City pavements: along each side of every block, just inside the kerb.
+    const city: [StreetPropKind, number][] = [['hydrant', 3], ['bin', 3], ['bench', 2], ['payphone', 1.6], ['mailbox', 1.2], ['newsbox', 1.2], ['hotdog', 1]];
+    for (const b of this.cityBlocks) {
+      if (b.plaza) continue;
+      let dogs = 0;
+      for (const [nx, nz] of [[0, -1], [0, 1], [-1, 0], [1, 0]]) {
+        for (let t = -b.h + 3.2; t < b.h - 3.2; t += rand(rng, 3, 6.5)) {
+          if (rng() < 0.4) continue;
+          let kind = pickKind(city);
+          if (kind === 'hotdog' && dogs) kind = 'bin';
+          const inset = 0.72 + STREET_PROP_SIZE[kind][2] / 2;
+          const out = FRONT_OUT.has(kind) ? 1 : -1;
+          const x = b.x + nx * (b.h - inset) - nz * t, z = b.z + nz * (b.h - inset) + nx * t;
+          if (put(kind, x, z, nx * out, nz * out, b.y) && kind === 'hotdog') dogs++;
+        }
+      }
+    }
+
+    // Town squares: a hot dog stand or two and some bins round the edge.
+    for (const p of this.plazas) {
+      const e = p.size / 2 - 2.2;
+      const corners = [[-1, -1], [1, -1], [-1, 1], [1, 1]].sort(() => rng() - 0.5);
+      put('hotdog', p.x + corners[0][0] * e, p.z + corners[0][1] * e, -corners[0][0], 0, p.y, true);
+      if (p.size > 20 || rng() < 0.5) put('hotdog', p.x + corners[1][0] * e, p.z + corners[1][1] * e, 0, -corners[1][1], p.y, true);
+      for (const [sx, sz] of corners.slice(2)) put('bin', p.x + sx * (e + 1), p.z + sz * (e + 1), 0, 1, p.y, true);
+    }
+
+    // Roads through towns and villages: both verges, every few metres.
+    const town: [StreetPropKind, number][] = [['hydrant', 3], ['mailbox', 2.5], ['bin', 2], ['bench', 1.5], ['payphone', 1], ['newsbox', 0.8], ['hotdog', 0.4]];
+    for (const r of this.roads) {
+      const len = Math.hypot(r.x1 - r.x0, r.z1 - r.z0), ux = (r.x1 - r.x0) / len, uz = (r.z1 - r.z0) / len;
+      for (let d = 4; d < len - 4; d += rand(rng, 6, 11)) {
+        const px = r.x0 + ux * d, pz = r.z0 + uz * d;
+        const poi = this.poiAt(px, pz);
+        if (!poi || poi.size === 'city' || Math.hypot(poi.x - px, poi.z - pz) > poi.radius * 0.85 || rng() < 0.35) continue;
+        const side = rng() < 0.5 ? -1 : 1, kind = pickKind(town);
+        const off = 4.4 + STREET_PROP_SIZE[kind][2] / 2;
+        const nx = -uz * side, nz = ux * side; // away from the road
+        const out = FRONT_OUT.has(kind) ? -1 : 1; // benches, hydrants and bins face the road
+        put(kind, px + nx * off, pz + nz * off, nx * out, nz * out);
+      }
+    }
+  }
+
   private plaza(cx: number, cz: number, y: number, size: number) {
     const rect = { x0: cx - size / 2, z0: cz - size / 2, x1: cx + size / 2, z1: cz + size / 2 };
     if (this.overlapsOccupied(rect, 0.5)) return;
     this.occupied.push(rect);
+    this.plazas.push({ x: cx, z: cz, y, size });
     this.addDecal(rect.x0, rect.z0, rect.x1, rect.z1, y, 0xcfc6b4, 0.045);
     // Fountain
     this.addSolid(cx - 3, y, cz - 3, cx + 3, y + 0.7, cz - 2.6, 0xd8d2c4);
@@ -4426,8 +5044,12 @@ export class GameMap {
       out.lerp(tmpC.setHex(town), clamp(k, 0, 1));
     }
     if (slope > 0.5) out.lerp(tmpC.setHex(THEME === 'western' ? 0xb4643c : 0x9c9a8f), clamp((slope - 0.5) * 2, 0, THEME === 'western' ? 0.85 : 0.7));
-    // Toy Box: the grass is a bright green play mat.
-    if (TOY) out.offsetHSL(0.02, 0.16, 0.04);
+    // Military island: lush grass, a little burnt earth right round the craters and wrecks.
+    if (TOY) {
+      out.offsetHSL(0, 0.05, 0.015);
+      const sc = this.scorchAt(x, z);
+      if (sc > 0) out.lerp(tmpC.setHex(0x5a4a38), sc * 0.55);
+    }
     return out;
   }
 
@@ -4513,7 +5135,9 @@ export class GameMap {
 
   private buildMeshes() {
     const rng = this.rng;
-    if (TOY) for (const s of this.solids) s.color = toyTint(s.color);
+    if (TOY) {
+      for (const s of this.solids) s.color = toyTint(s.color);
+    }
     const q = new Quaternion(), p = new Vector3(), s = new Vector3();
     const unit = new BoxGeometry(1, 1, 1);
     const item = (x: number, y: number, z: number, sx: number, sy: number, sz: number, color: number | Color, rot?: Quaternion) => ({
@@ -4523,15 +5147,25 @@ export class GameMap {
     });
 
     // Buildings, rocks, props: 100 m chunks, drawn out to the fog.
-    const solidItems = this.solids.map((b) => item(
-      (b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, (b.minZ + b.maxZ) / 2,
-      b.maxX - b.minX, b.maxY - b.minY, b.maxZ - b.minZ,
-      new Color(b.color).offsetHSL(0, 0, (rng() - 0.5) * 0.04),
-    ));
+    // Boxes that share a face exactly (a trim flush with a wall, two slabs at the same height)
+    // flicker as the GPU can't decide which is in front. Drawing each box a hair bigger, small
+    // details more so and neighbours by different amounts, keeps every face apart. Collision
+    // still uses the exact boxes.
+    const solidItems: ReturnType<typeof item>[] = [], glassItems: ReturnType<typeof item>[] = [];
+    this.solids.forEach((b, i) => {
+      const mn = Math.min(b.maxX - b.minX, b.maxY - b.minY, b.maxZ - b.minZ), mx = Math.max(b.maxX - b.minX, b.maxY - b.minY, b.maxZ - b.minZ);
+      const e = (mn < 0.5 ? 0.024 : mx < 4 ? 0.016 : 0.008) + (i % 4) * 0.005;
+      (b.glassy ? glassItems : solidItems).push(item(
+        (b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2, (b.minZ + b.maxZ) / 2,
+        b.maxX - b.minX + e, b.maxY - b.minY + e, b.maxZ - b.minZ + e,
+        new Color(b.color).offsetHSL(0, 0, (rng() - 0.5) * 0.04),
+      ));
+    });
     this.chunked(unit, blockyMaterial(), solidItems, 100, 0, { cast: true, receive: true });
+    if (glassItems.length) this.chunked(unit, curtainGlassMaterial(), glassItems, 100, 0, { cast: true, receive: true });
 
     // Flat markings: polygon offset pulls them in front of the ground so they never z-fight.
-    const decalMat = new MeshLambertMaterial({ polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
+    const decalMat = TOY ? pavingMaterial() : new MeshLambertMaterial({ polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 });
     const hsl = { h: 0, s: 0, l: 0 };
     const decalItems = this.decals.map((b) => {
       const it = item(
@@ -4572,13 +5206,14 @@ export class GameMap {
         }
       }
     }
-    if (TOY) for (const it of [...coneItems, ...blobItems]) it.c.offsetHSL(0, 0.22, 0.05);
-    this.chunked(new ConeGeometry(1, 1, 7), new MeshLambertMaterial(), coneItems, 125, 0, { cast: true });
-    this.chunked(new IcosahedronGeometry(1, 1), new MeshLambertMaterial({ flatShading: true }), blobItems, 125, 0, { cast: true });
+    // Toy Box: moulded playset trees, all in the same few greens of the plastic bag.
+    if (TOY) for (const it of [...coneItems, ...blobItems]) it.c.setHex(pick(rng, [0x4f9a3a, 0x5aa844, 0x3f8a35, 0x6ab04a, 0x2f7a3a]));
+    this.chunked(new ConeGeometry(1, 1, TOY ? 8 : 7), plastic({}, 0.38), coneItems, 125, 0, { cast: true });
+    this.chunked(new IcosahedronGeometry(1, 1), plastic({ flatShading: !TOY }, 0.38), blobItems, 125, 0, { cast: true });
 
     // Bushes (hideable) plus grass tufts and flowers to break up open fields.
     const bushItems = this.bushes.map((b) => item(b.x, b.y + b.r * 0.55, b.z, b.r * 1.2, b.r * 0.9, b.r * 1.1,
-      pick(rng, THEME === 'western' ? [0x7a8a4a, 0x8a8a55, 0x6f7a45, 0x9a9a60] : [0x3e8a36, 0x4c9a3c, 0x357a33, 0x5aa545]), new Quaternion().setFromAxisAngle(tmpV.set(0, 1, 0), rng() * 6)));
+      pick(rng, THEME === 'western' ? [0x7a8a4a, 0x8a8a55, 0x6f7a45, 0x9a9a60] : TOY ? [0x3e8a36, 0x4c9a3c, 0x357a33, 0x5aa545] : [0x3e8a36, 0x4c9a3c, 0x357a33, 0x5aa545]), new Quaternion().setFromAxisAngle(tmpV.set(0, 1, 0), rng() * 6)));
     this.chunked(new IcosahedronGeometry(1, 0), new MeshLambertMaterial({ flatShading: true }), bushItems, 100, 380, { cast: true, receive: true });
 
     const tuftGeo = new ConeGeometry(0.12, 0.55, 3);
@@ -4592,13 +5227,13 @@ export class GameMap {
       const poi = this.poiAt(cx, cz);
       if (poi && (poi.size === 'city' || Math.hypot(poi.x - cx, poi.z - cz) < poi.radius * 0.7)) continue;
       if (this.nearRoad(cx, cz, 5) || this.terrain.heightAt(cx, cz) < 1.3) continue;
-      const flower = rng() < (THEME === 'western' ? 0.05 : 0.25);
+      const flower = rng() < (THEME === 'western' ? 0.05 : TOY ? 0.12 : 0.25);
       const col = flower ? pick(rng, [0xf2e14c, 0xf2f2f2, 0xe86fa0, 0x9a7ae0, 0xf08a3c]) : 0;
       for (let k = 0; k < 8; k++) {
         const x = cx + rand(rng, -2.5, 2.5), z = cz + rand(rng, -2.5, 2.5), y = this.terrain.heightAt(x, z);
         const sc = rand(rng, 0.7, 1.4);
         if (flower && flowers.length < 2500) flowers.push(item(x, y - 0.05, z, sc, sc, sc, col));
-        else if (!flower && tufts.length < 9000) tufts.push(item(x, y - 0.05, z, sc, sc, sc, pick(rng, THEME === 'western' ? [0xb8a060, 0xa89050, 0xc4ac6a, 0x9a8a4a] : [0x4f9a3f, 0x5fae4f, 0x6fb655, 0x7aa04a])));
+        else if (!flower && tufts.length < 9000) tufts.push(item(x, y - 0.05, z, sc, sc, sc, pick(rng, THEME === 'western' ? [0xb8a060, 0xa89050, 0xc4ac6a, 0x9a8a4a] : TOY ? [0x4f9a3f, 0x5fae4f, 0x6fb655, 0x7aa04a] : [0x4f9a3f, 0x5fae4f, 0x6fb655, 0x7aa04a])));
       }
     }
     this.chunked(tuftGeo, new MeshLambertMaterial(), tufts, 50, 110, { detail: true });
@@ -4606,27 +5241,74 @@ export class GameMap {
 
     for (const c of this.buildTerrainChunks()) this.scene.add(c);
 
-    const seaMat = new MeshLambertMaterial({ color: 0x2f8fcf });
+    let seaMat: Material = new MeshLambertMaterial({ color: 0x2f8fcf });
     if (TOY) {
-      // The sea is a ball pit.
-      const tex = new CanvasTexture(ballPitCanvas());
+      // Clear blue water: glossy, a little see-through at the shore, with ripples drifting by.
+      const tex = new CanvasTexture(waterCanvas());
       tex.wrapS = tex.wrapT = RepeatWrapping;
-      tex.repeat.set(8000 / 12, 8000 / 12);
+      tex.repeat.set(8000 / 24, 8000 / 24);
       tex.colorSpace = SRGBColorSpace;
       tex.anisotropy = 4;
-      seaMat.map = tex;
-      seaMat.color.setHex(0xffffff);
-      this.scene.add(buildToyChest(1450, 520));
+      seaMat = new MeshStandardMaterial({ color: 0x2aa6ee, map: tex, roughness: 0.12, metalness: 0.05, transparent: true, opacity: 0.86 });
     }
     const sea = (this.sea = new Mesh(new PlaneGeometry(8000, 8000), seaMat));
+    if (TOY) sea.onBeforeRender = () => {
+      const t = performance.now() / 1000, m = (seaMat as MeshStandardMaterial).map!;
+      m.offset.set(t * 0.004, t * 0.0025);
+    };
     sea.rotation.x = -Math.PI / 2;
     sea.position.y = -0.5;
     sea.receiveShadow = true;
     this.scene.add(sea);
 
+    // Street furniture: one instanced model per kind.
+    const propMat = plastic({ vertexColors: true }, 0.35), white = new Color(0xffffff);
+    const byKind = new Map<StreetPropKind, ReturnType<typeof item>[]>();
+    for (const sp of this.streetProps) {
+      let list = byKind.get(sp.kind);
+      if (!list) byKind.set(sp.kind, (list = []));
+      list.push(item(sp.x, sp.y, sp.z, 1, 1, 1, white, new Quaternion().setFromAxisAngle(tmpV.set(0, 1, 0), sp.yaw)));
+    }
+    for (const [kind, list] of byKind) this.chunked(streetPropGeometry(kind), propMat, list, 100, 170, { cast: true, receive: true });
+
     this.scene.add(this.buildRoadMesh());
     this.buildBridgeMeshes();
     this.buildZiplineMeshes();
+  }
+
+  private lampHeads: InstancedMesh | null = null;
+  private lampGlow: Points | null = null;
+  private lampPools: InstancedMesh | null = null;
+
+  /** Lamp heads, plus a glow and a pool of light on the ground that only show at night. */
+  private buildLamps() {
+    const n = this.lamps.length;
+    if (!n) return;
+    const m = new Matrix4(), q = new Quaternion(), s = new Vector3(1, 1, 1);
+    this.lampHeads = new InstancedMesh(new BoxGeometry(0.75, 0.22, 0.5), new MeshBasicMaterial({ color: 0xe8e2c8 }), n);
+    const pos = new Float32Array(n * 3);
+    this.lampPools = new InstancedMesh(new PlaneGeometry(1, 1).rotateX(-Math.PI / 2), new MeshBasicMaterial({
+      map: glowTexture(), transparent: true, depthWrite: false, blending: AdditiveBlending, color: 0xffc070, opacity: 0.55,
+      polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -8,
+    }), n);
+    this.lamps.forEach((l, i) => {
+      this.lampHeads!.setMatrixAt(i, m.compose(tmpV.set(l.x, l.y + 0.1, l.z), q, s));
+      pos.set([l.x, l.y - 0.15, l.z], i * 3);
+      this.lampPools!.setMatrixAt(i, m.compose(tmpV.set(l.x, this.terrain.heightAt(l.x, l.z) + 0.08, l.z), q, tmpV2.set(9, 1, 9)));
+    });
+    const g = new BufferGeometry();
+    g.setAttribute('position', new BufferAttribute(pos, 3));
+    this.lampGlow = new Points(g, new PointsMaterial({ map: glowTexture(), size: 2.4, color: 0xffd28a, opacity: 0.75, transparent: true, depthWrite: false, blending: AdditiveBlending }));
+    this.lampGlow.frustumCulled = this.lampPools.frustumCulled = false;
+    this.lampGlow.visible = this.lampPools.visible = false;
+    this.scene.add(this.lampHeads, this.lampGlow, this.lampPools);
+  }
+
+  /** Street lamps on at night. */
+  setNight(on: boolean) {
+    if (!this.lampHeads) return;
+    (this.lampHeads.material as MeshBasicMaterial).color.setHex(on ? 0xfff0c0 : 0xd8d2b8);
+    this.lampGlow!.visible = this.lampPools!.visible = on;
   }
 
   private buildBridgeMeshes() {
@@ -4710,7 +5392,7 @@ export class GameMap {
     tex.anisotropy = 8;
     tex.colorSpace = SRGBColorSpace;
     // Toned down: flat ground faces the sun head-on and otherwise glows next to the walls.
-    const mat = new MeshLambertMaterial({ color: 0xc4c4c4, map: tex, vertexColors: true, flatShading: true });
+    const mat = new MeshLambertMaterial({ color: 0xc4c4c4, map: tex, vertexColors: true });
     const out: Object3D[] = [];
     const chunks = Math.ceil((n - 1) / C);
     for (let cz = 0; cz < chunks; cz++) {
@@ -4741,7 +5423,7 @@ export class GameMap {
         };
         const lod = new LOD();
         lod.position.set(ox, 0, oz);
-        for (const [step, dist] of [[1, 0], [2, 290], [5, 600]] as const) {
+        for (const [step, dist] of [[1, 0], [2, 520], [4, 950]] as const) {
           const idx: number[] = [];
           for (let j = 0; j < h - 1; j += step) {
             for (let i = 0; i < w - 1; i += step) {
@@ -4776,7 +5458,7 @@ export class GameMap {
   /** Roads are ribbons draped over the terrain (and over bridge decks). */
   private buildRoadMesh() {
     const T = this.terrain;
-    const pos: number[] = [], idx: number[] = [];
+    const pos: number[] = [], idx: number[] = [], uvs: number[] = [];
     const yAt = (x: number, z: number) => Math.max(T.heightAt(x, z) + 0.06, this.deckAt(x, z) + 0.04);
     for (const r of this.roads) {
       const len = Math.hypot(r.x1 - r.x0, r.z1 - r.z0);
@@ -4788,6 +5470,7 @@ export class GameMap {
         const x = r.x0 + dx * len * (i / segs), z = r.z0 + dz * len * (i / segs);
         pos.push(x + nx, yAt(x + nx, z + nz), z + nz);
         pos.push(x - nx, yAt(x - nx, z - nz), z - nz);
+        uvs.push(0, (len * i) / segs / 8, 1, (len * i) / segs / 8);
         if (i > 0) {
           const a = startV + (i - 1) * 2, b = a + 1, c = a + 2, d = a + 3;
           idx.push(a, c, b, b, c, d);
@@ -4796,13 +5479,40 @@ export class GameMap {
     }
     const geo = new BufferGeometry();
     geo.setAttribute('position', new BufferAttribute(new Float32Array(pos), 3));
+    geo.setAttribute('uv', new BufferAttribute(new Float32Array(uvs), 2));
     geo.setIndex(idx);
     geo.computeVertexNormals();
     // Make sure the ribbon faces up regardless of winding.
     const nrm = geo.getAttribute('normal') as BufferAttribute;
     for (let i = 0; i < nrm.count; i++) if (nrm.getY(i) < 0) nrm.setXYZ(i, -nrm.getX(i), -nrm.getY(i), -nrm.getZ(i));
+    const color = THEME === 'western' ? 0x8a6c4a : THEME === 'park' ? 0xcdbb98 : 0x5b5f66;
+    let map: CanvasTexture | null = null;
+    if (TOY) {
+      // Asphalt with grit, white edge lines and a dashed yellow centre line (one dash per 8 m of road).
+      const cv = document.createElement('canvas');
+      cv.width = 128;
+      cv.height = 256;
+      const g = cv.getContext('2d')!, base = new Color(color);
+      g.fillStyle = `#${base.getHexString()}`;
+      g.fillRect(0, 0, 128, 256);
+      const r2 = mulberry32(77);
+      for (let i = 0; i < 2600; i++) {
+        const l = r2();
+        g.fillStyle = `rgba(${l < 0.5 ? '0,0,0' : '255,255,255'},${0.05 + r2() * 0.08})`;
+        g.fillRect(Math.floor(r2() * 128), Math.floor(r2() * 256), 1 + Math.floor(r2() * 2), 1 + Math.floor(r2() * 2));
+      }
+      g.fillStyle = '#e8e6de';
+      g.fillRect(6, 0, 4, 256);
+      g.fillRect(118, 0, 4, 256);
+      g.fillStyle = '#f2c230';
+      g.fillRect(61, 0, 6, 128);
+      map = new CanvasTexture(cv);
+      map.wrapS = map.wrapT = RepeatWrapping;
+      map.anisotropy = 8;
+      map.colorSpace = SRGBColorSpace;
+    }
     const mesh = new Mesh(geo, new MeshLambertMaterial({
-      color: THEME === 'western' ? 0x8a6c4a : THEME === 'park' ? 0xcdbb98 : 0x5b5f66, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4, side: 2,
+      color: map ? 0xffffff : color, map, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4, side: 2,
     }));
     mesh.receiveShadow = true;
     return mesh;
@@ -4810,31 +5520,37 @@ export class GameMap {
 
   /** 1024px top-down map image (with hill shading) used by the minimap and the big map. */
   private drawMapCanvas(): HTMLCanvasElement {
-    const N = 1024;
+    // Terrain shading at 1024, everything drawn on top (roads, buildings, names) crisp at 2048.
+    const T = 1024, N = 2048, S = N / T;
+    const tc = document.createElement('canvas');
+    tc.width = tc.height = T;
     const cv = document.createElement('canvas');
     cv.width = cv.height = N;
     const ctx = cv.getContext('2d')!;
-    const k = N / this.size;
+    let k = T / this.size;
     const tx = (x: number) => (x + this.half) * k;
-    const img = ctx.createImageData(N, N);
+    const img = tc.getContext('2d')!.createImageData(T, T);
     const c = new Color();
-    for (let py = 0; py < N; py++) {
-      for (let px = 0; px < N; px++) {
+    for (let py = 0; py < T; py++) {
+      for (let px = 0; px < T; px++) {
         const x = px / k - this.half, z = py / k - this.half;
         const h = this.terrain.heightAt(x, z);
         const gx = this.terrain.heightAt(x + 2, z) - this.terrain.heightAt(x - 2, z);
         const gz = this.terrain.heightAt(x, z + 2) - this.terrain.heightAt(x, z - 2);
-        if (h < -0.5) c.setHex(TOY ? 0x4a6fd0 : 0x2f8fcf);
+        if (h < -0.5) c.setHex(TOY ? 0x3a8fd8 : 0x2f8fcf);
         else this.groundColor(x, z, h, Math.hypot(gx, gz) / 4, c);
         const shade = clamp(1 - (gx + gz) * 0.09 + h * 0.004, 0.55, 1.35);
-        const o = (py * N + px) * 4;
+        const o = (py * T + px) * 4;
         img.data[o] = clamp(Math.pow(c.r, 1 / 2.2) * 255 * shade, 0, 255);
         img.data[o + 1] = clamp(Math.pow(c.g, 1 / 2.2) * 255 * shade, 0, 255);
         img.data[o + 2] = clamp(Math.pow(c.b, 1 / 2.2) * 255 * shade, 0, 255);
         img.data[o + 3] = 255;
       }
     }
-    ctx.putImageData(img, 0, 0);
+    tc.getContext('2d')!.putImageData(img, 0, 0);
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(tc, 0, 0, N, N);
+    k = N / this.size;
 
     const hex = (n: number) => `#${n.toString(16).padStart(6, '0')}`;
     for (const d of this.decals) {
@@ -4850,9 +5566,9 @@ export class GameMap {
     for (const t of this.toyMarks) {
       ctx.fillStyle = t.color;
       ctx.strokeStyle = '#1a1a1a';
-      ctx.lineWidth = 1.5;
+      ctx.lineWidth = 1.5 * S;
       ctx.beginPath();
-      ctx.arc(tx(t.x), tx(t.z), Math.max(3, t.r * k), 0, Math.PI * 2);
+      ctx.arc(tx(t.x), tx(t.z), Math.max(3 * S, t.r * k), 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
     }
@@ -4868,18 +5584,18 @@ export class GameMap {
     // The railway: a dark line with sleepers.
     for (const r of this.rails) {
       ctx.strokeStyle = '#3a2c20';
-      ctx.lineWidth = 2.2;
+      ctx.lineWidth = 2.2 * S;
       ctx.beginPath();
       ctx.moveTo(tx(r.x0), tx(r.z0));
       ctx.lineTo(tx(r.x1), tx(r.z1));
       ctx.stroke();
       const len = Math.hypot(r.x1 - r.x0, r.z1 - r.z0), ux = (r.x1 - r.x0) / len, uz = (r.z1 - r.z0) / len;
-      ctx.lineWidth = 1.2;
+      ctx.lineWidth = 1.2 * S;
       for (let d = 0; d < len; d += 9) {
         const cx = tx(r.x0 + ux * d), cz = tx(r.z0 + uz * d);
         ctx.beginPath();
-        ctx.moveTo(cx - uz * 3.5, cz + ux * 3.5);
-        ctx.lineTo(cx + uz * 3.5, cz - ux * 3.5);
+        ctx.moveTo(cx - uz * 3.5 * S, cz + ux * 3.5 * S);
+        ctx.lineTo(cx + uz * 3.5 * S, cz - ux * 3.5 * S);
         ctx.stroke();
       }
     }
@@ -4887,23 +5603,24 @@ export class GameMap {
       ctx.fillStyle = f.color;
       ctx.fillRect(tx(f.x0), tx(f.z0), (f.x1 - f.x0) * k, (f.z1 - f.z0) * k);
       ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-      ctx.lineWidth = 1;
+      ctx.lineWidth = S;
       ctx.strokeRect(tx(f.x0), tx(f.z0), (f.x1 - f.x0) * k, (f.z1 - f.z0) * k);
     }
     ctx.textAlign = 'center';
-    ctx.font = '600 12px system-ui, sans-serif';
+    ctx.font = `600 ${12 * S}px 'Barlow Condensed', system-ui, sans-serif`;
     for (const l of this.landmarks) {
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 3 * S;
       ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-      ctx.strokeText(l.name, tx(l.x), tx(l.z) - 12);
+      ctx.strokeText(l.name, tx(l.x), tx(l.z) - 12 * S);
       ctx.fillStyle = 'rgba(255,255,255,0.85)';
-      ctx.fillText(l.name, tx(l.x), tx(l.z) - 12);
+      ctx.fillText(l.name, tx(l.x), tx(l.z) - 12 * S);
     }
     for (const p of this.pois) {
-      const px = p.size === 'city' ? 30 : p.size === 'town' ? 22 : 17;
-      ctx.font = `bold ${px}px system-ui, sans-serif`;
-      const label = p.name.toUpperCase(), y = tx(p.z) - p.radius * k * 0.75 - 4;
-      ctx.lineWidth = 5;
+      const px = (p.size === 'city' ? 30 : p.size === 'town' ? 22 : 17) * S;
+      ctx.font = `bold ${px}px 'Barlow Condensed', system-ui, sans-serif`;
+      try { (ctx as unknown as { letterSpacing: string }).letterSpacing = `${px * 0.12}px`; } catch { /* old browsers */ }
+      const label = p.name.toUpperCase(), y = tx(p.z) - p.radius * k * 0.75 - 4 * S;
+      ctx.lineWidth = 5 * S;
       ctx.strokeStyle = 'rgba(0,0,0,0.75)';
       ctx.strokeText(label, tx(p.x), y);
       ctx.fillStyle = p.size === 'city' ? '#ffe28a' : '#fff';
@@ -4915,6 +5632,24 @@ export class GameMap {
 
 const tmpC = new Color();
 const tmpV = new Vector3();
+const tmpV2 = new Vector3();
+
+let glowTex: CanvasTexture | null = null;
+/** Soft round glow for lamp light (shared). */
+function glowTexture() {
+  if (glowTex) return glowTex;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = 64;
+  const ctx = cv.getContext('2d')!, gr = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, 'rgba(255,255,255,1)');
+  gr.addColorStop(0.25, 'rgba(255,255,255,0.55)');
+  gr.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = gr;
+  ctx.fillRect(0, 0, 64, 64);
+  glowTex = new CanvasTexture(cv);
+  glowTex.colorSpace = SRGBColorSpace;
+  return glowTex;
+}
 
 function smoothstep(a: number, b: number, x: number) {
   const t = clamp((x - a) / (b - a), 0, 1);
@@ -4971,6 +5706,20 @@ function makeDetailCanvas() {
       ctx.beginPath();
       ctx.arc(x + ox, y + oy, r, 0, Math.PI * 2);
       ctx.fill();
+    }
+  }
+  // Blades of grass: short strokes, mostly darker, a few catching the light.
+  ctx.lineCap = 'round';
+  for (let i = 0; i < 3400; i++) {
+    const x = rng() * N, y = rng() * N, len = 3 + rng() * 6, a = -Math.PI / 2 + (rng() - 0.5) * 1.3;
+    const dark = rng() < 0.78;
+    ctx.strokeStyle = dark ? `hsla(0, 0%, ${52 + rng() * 22}%, ${0.28 + rng() * 0.25})` : `hsla(0, 0%, 100%, ${0.3 + rng() * 0.3})`;
+    ctx.lineWidth = 0.8 + rng() * 1.1;
+    for (const ox of [-N, 0, N]) for (const oy of [-N, 0, N]) {
+      ctx.beginPath();
+      ctx.moveTo(x + ox, y + oy);
+      ctx.quadraticCurveTo(x + ox + Math.cos(a) * len * 0.5 + (rng() - 0.5) * 2, y + oy + Math.sin(a) * len * 0.5, x + ox + Math.cos(a) * len, y + oy + Math.sin(a) * len);
+      ctx.stroke();
     }
   }
   return cv;

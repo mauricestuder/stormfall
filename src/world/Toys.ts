@@ -3,12 +3,12 @@ import {
 } from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import type { Box } from '../core/Collision';
-import { plastic, type LitMat } from '../game/Look';
+import type { LitMat } from '../game/Look';
 import type { Rng } from '../core/rng';
 
 /**
  * Toy Box: the giant toys lying around the island (building blocks, bricks, dice, beach balls,
- * crayons, stacking rings, rockets, teddy bears, rubber ducks) and the toy chest walls round it all.
+ * crayons, stacking rings, rockets, teddy bears, rubber ducks).
  * Each toy is one vertex-coloured mesh plus a few collision boxes.
  */
 
@@ -274,92 +274,25 @@ export function buildToy(kind: ToyKind, rng: Rng): { b: ToyBuilder; perches: Per
   return { b, perches };
 }
 
-/** 5×7 pixel letters for the words painted inside the toy chest. */
-const FONT: Record<string, string[]> = {
-  T: ['#####', '..#..', '..#..', '..#..', '..#..', '..#..', '..#..'],
-  O: ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
-  Y: ['#...#', '#...#', '.#.#.', '..#..', '..#..', '..#..', '..#..'],
-  B: ['####.', '#...#', '#...#', '####.', '#...#', '#...#', '####.'],
-  X: ['#...#', '#...#', '.#.#.', '..#..', '.#.#.', '#...#', '#...#'],
-  A: ['.###.', '#...#', '#...#', '#####', '#...#', '#...#', '#...#'],
-  C: ['.###.', '#...#', '#....', '#....', '#....', '#...#', '.###.'],
-  P: ['####.', '#...#', '#...#', '####.', '#....', '#....', '#....'],
-  L: ['#....', '#....', '#....', '#....', '#....', '#....', '#####'],
-  '1': ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '.###.'],
-  '2': ['.###.', '#...#', '....#', '...#.', '..#..', '.#...', '#####'],
-  '3': ['####.', '....#', '....#', '.###.', '....#', '....#', '####.'],
-  ' ': ['.....', '.....', '.....', '.....', '.....', '.....', '.....'],
-};
-
-/**
- * The toy chest round the whole island: four huge wooden walls (plank stripes, a painted rim) with
- * words in giant letters on the inside. Visual only; drawn without fog so they frame the horizon.
- */
-export function buildToyChest(D: number, H: number) {
-  const b = new ToyBuilder();
-  const T = 30, planks = 8, wood = [0xc98a4b, 0xb97a3d];
-  const walls: { word: string; cx: number; cz: number; along: 'x' | 'z'; face: number }[] = [
-    { word: 'TOY BOX', cx: 0, cz: -D, along: 'x', face: 1 },
-    { word: 'ABC', cx: 0, cz: D, along: 'x', face: -1 },
-    { word: 'PLAY', cx: D, cz: 0, along: 'z', face: -1 },
-    { word: '123', cx: -D, cz: 0, along: 'z', face: 1 },
-  ];
-  for (const w of walls) {
-    const len = D * 2 + T * 2;
-    // Planks from below the sea up to the rim.
-    const ph = (H + 60) / planks;
-    for (let i = 0; i < planks; i++) {
-      const y = -60 + ph * (i + 0.5);
-      if (w.along === 'x') b.box(len, ph - 1, T, w.cx, y, w.cz + (-w.face * T) / 2, wood[i % 2], false);
-      else b.box(T, ph - 1, len, w.cx + (-w.face * T) / 2, y, w.cz, wood[i % 2], false);
-    }
-    // Painted rim along the top.
-    if (w.along === 'x') b.box(len + 10, 24, T + 10, w.cx, H + 10, w.cz + (-w.face * T) / 2, 0xe3342f, false);
-    else b.box(T + 10, 24, len + 10, w.cx + (-w.face * T) / 2, H + 10, w.cz, 0xe3342f, false);
-    // The word, in pixels, one colour per letter.
-    const px = 22, gap = px, cw = 5 * px + gap, total = w.word.length * cw - gap;
-    [...w.word].forEach((ch, li) => {
-      const rows = FONT[ch] ?? FONT[' '], col = TOY_COLORS[(li * 3 + w.word.length) % 8];
-      rows.forEach((row, r) => {
-        [...row].forEach((on, c) => {
-          if (on !== '#') return;
-          const u = -total / 2 + li * cw + c * px + px / 2, y = H * 0.62 - r * px;
-          // Letters read left to right from inside the chest.
-          if (w.along === 'x') b.box(px - 2, px - 2, 3, w.cx + u * w.face, y, w.cz + w.face * 1.5, col, false);
-          else b.box(3, px - 2, px - 2, w.cx + w.face * 1.5, y, w.cz - u * w.face, col, false);
-        });
-      });
-    });
-  }
-  const mat = plastic({ vertexColors: true, fog: false }, 0.75);
-  const { mesh } = b.finish(0, 0, 0, 0, mat);
-  mesh.castShadow = mesh.receiveShadow = false;
-  mesh.frustumCulled = false;
-  return mesh;
-}
-
-/** The ball-pit sea: a tile of packed plastic balls, repeated across the whole water plane. */
-export function ballPitCanvas() {
+/** Clear blue water: soft light ripples on white (the material's colour tints it blue). */
+export function waterCanvas() {
   const N = 256, cv = document.createElement('canvas');
   cv.width = cv.height = N;
   const ctx = cv.getContext('2d')!;
-  ctx.fillStyle = '#1b3f8a';
+  ctx.fillStyle = '#d4e6f4';
   ctx.fillRect(0, 0, N, N);
-  let s = 7;
+  let s = 11;
   const rnd = () => ((s = (s * 16807) % 2147483647) / 2147483647);
-  const cols = ['#e3342f', '#2f6fe0', '#ffc21a', '#2fb84a', '#ff7a1a', '#8b3fe0', '#e83e8c', '#14b8a6'];
-  for (let i = 0; i < 260; i++) {
-    const x = rnd() * N, y = rnd() * N, r = 12 + rnd() * 4, c = cols[Math.floor(rnd() * cols.length)];
-    // Draw wrapped so the tile repeats seamlessly.
+  ctx.lineCap = 'round';
+  for (let i = 0; i < 70; i++) {
+    const x = rnd() * N, y = rnd() * N, len = 18 + rnd() * 40, a = rnd() * 0.5 - 0.25, bright = rnd() < 0.5;
+    ctx.strokeStyle = bright ? 'rgba(255,255,255,0.9)' : 'rgba(150,190,225,0.6)';
+    ctx.lineWidth = 1.5 + rnd() * 2.5;
     for (const ox of [-N, 0, N]) for (const oy of [-N, 0, N]) {
-      const g = ctx.createRadialGradient(x + ox - r * 0.35, y + oy - r * 0.35, r * 0.1, x + ox, y + oy, r);
-      g.addColorStop(0, '#ffffff');
-      g.addColorStop(0.25, c);
-      g.addColorStop(1, c);
-      ctx.fillStyle = g;
       ctx.beginPath();
-      ctx.arc(x + ox, y + oy, r, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.moveTo(x + ox, y + oy);
+      ctx.quadraticCurveTo(x + ox + len / 2, y + oy - 4 + a * 20, x + ox + len, y + oy + a * 10);
+      ctx.stroke();
     }
   }
   return cv;

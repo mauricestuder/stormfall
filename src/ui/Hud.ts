@@ -10,7 +10,7 @@ import { FIST_ICON, gunIcon } from './icons';
 import { TEAM_CSS, TEAM_NAMES, type Arena } from '../game/Arena';
 import { cheatOn } from '../game/Cheats';
 import { HOOK_CHARGES, HOOK_RECHARGE, WHEEL_SLOTS } from '../weapons/PlayerWeapons';
-import { AMMO_INFO, ATT_KINDS, ATTACHMENTS, canAttach, magSize, THROWABLES, WEAPONS, type AmmoType, type ThrowKind, type WeaponInstance } from '../weapons/Weapon';
+import { AMMO_INFO, ATT_KINDS, ATTACHMENTS, canAttach, magSize, THROWABLES, WEAPONS, WEB_ENABLED, type AmmoType, type ThrowKind, type WeaponInstance } from '../weapons/Weapon';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -212,7 +212,7 @@ export class Hud {
     el.className = `dn ${kind}`;
     el.textContent = String(Math.round(amount));
     this.dmgLayer.appendChild(el);
-    const pos = at.clone().add(new Vector3((Math.random() - 0.5) * 0.4, 0.3, 0));
+    const pos = at.clone().add(new Vector3((Math.random() - 0.5) * 0.3, 0.55, 0));
     this.numbers.push({ el, pos, life: 1.1, target, total: amount, kind });
   }
 
@@ -321,6 +321,38 @@ export class Hud {
     }, 5000);
   }
 
+  private kbEl: HTMLDivElement | null = null;
+  private kbTimer = 0;
+
+  /**
+   * Kill banner: an emblem drops in at the bottom-centre with one notch lit per kill in the streak,
+   * a shockwave ring and the victim's name underneath. Each kill in a row gets a bigger banner.
+   */
+  killBanner(victim: string, n: number, head: boolean, title: string) {
+    if (!this.kbEl) {
+      this.kbEl = document.createElement('div');
+      this.kbEl.id = 'killbanner';
+      document.body.appendChild(this.kbEl);
+    }
+    const k = Math.min(n, 5), pips = Array.from({ length: 5 }, (_, i) => {
+      const a = -90 + (i - 2) * 26;
+      return `<i class="${i < k ? 'on' : ''}" style="--a:${a}deg;--d:${i * 50}ms"></i>`;
+    }).join('');
+    const icon = head
+      ? '<path d="M50 20a24 24 0 0 0-24 24c0 9 5 16 11 20v10h26V64c6-4 11-11 11-20a24 24 0 0 0-24-24zm-10 26a5 5 0 1 1 0 .1zm20 0a5 5 0 1 1 0 .1z"/>'
+      : '<path d="M50 18 58 42 82 50 58 58 50 82 42 58 18 50 42 42Z"/>';
+    this.kbEl.className = `k${k}${head ? ' head' : ''}`;
+    this.kbEl.innerHTML = `<div class="kb-emb"><div class="kb-ring"></div><div class="kb-pips">${pips}</div>
+      <svg viewBox="0 0 100 100"><polygon class="kb-hex" points="50,4 90,27 90,73 50,96 10,73 10,27"/><polygon class="kb-hex2" points="50,14 81,32 81,68 50,86 19,68 19,32"/>${icon}</svg>
+      <b class="kb-n">${n}</b></div>
+      <div class="kb-title">${escapeHtml(title)}</div><div class="kb-name">${escapeHtml(victim.toUpperCase())}${head ? ' <em>HEADSHOT</em>' : ''}</div>`;
+    this.kbEl.classList.remove('out');
+    void this.kbEl.offsetWidth;
+    this.kbEl.classList.add('in');
+    clearTimeout(this.kbTimer);
+    this.kbTimer = window.setTimeout(() => this.kbEl?.classList.add('out'), 2300);
+  }
+
   announce(text: string, seconds = 3) {
     this.announceEl.textContent = text;
     this.announceTime = seconds;
@@ -410,7 +442,7 @@ export class Hud {
     const items: { key: string; name: string; n: number; color: string; desc: string; keyHint: string }[] = [
       { key: 'plates', name: 'Armor Plate', n: p.plates, color: '#3aa0ff', desc: 'Restores a bar of armor. Works while moving.', keyHint: 'V' },
       { key: 'medkits', name: 'Medkit', n: p.medkits, color: '#ff6b6b', desc: 'Restores health.', keyHint: 'H' },
-      ...(['frag', 'smoke', 'flash', 'grapple'] as ThrowKind[]).map((t) => ({
+      ...((WEB_ENABLED ? ['frag', 'smoke', 'flash', 'grapple'] : ['frag', 'smoke', 'flash']) as ThrowKind[]).map((t) => ({
         key: t, name: THROWABLES[t].name, n: p.throwables[t], color: hex(THROWABLES[t].color | 0x202020),
         desc: t === 'frag' ? 'Bounces, then explodes after a short fuse.' : t === 'smoke' ? 'A thick cloud that blocks sight lines.'
           : t === 'flash' ? 'Blinds and deafens anyone looking at it — for a long time.' : 'Fire at a wall or roof and get reeled in. 3 charges; each one comes back after 30 s.',
@@ -597,8 +629,8 @@ export class Hud {
       const c = '#' + (THROWABLES[t].color | 0x303030).toString(16).padStart(6, '0');
       return `<span class="${sel ? 'sel' : ''}${n ? '' : ' none'}"><i style="background:${c}"></i>${THROWABLES[t].name.split(' ')[0]} <b>${n}</b></span>`;
     }).join('');
-    const hook = p.hookOwned || p.throwables.grapple ? `<span class="${p.throwables.grapple ? '' : 'none'}"><i style="background:#3f9ae8"></i>Hook <b>${p.throwables.grapple}/${HOOK_CHARGES}</b>${p.hookOwned && p.throwables.grapple < HOOK_CHARGES ? ` <small>+1 in ${Math.ceil(HOOK_RECHARGE - p.hookCharge)}s</small>` : ''} <kbd>X</kbd></span>` : '';
-    this.setHtml(this.throwEl, 'throw', `${th}${hook}<em><kbd>G</kbd> tap: ready · hold: wheel</em>`);
+    const hook = p.hookOwned || p.throwables.grapple ? `<span class="${p.throwables.grapple ? '' : 'none'}"><i style="background:#3f9ae8"></i>Web <b>${p.throwables.grapple}/${HOOK_CHARGES}</b>${p.hookOwned && p.throwables.grapple < HOOK_CHARGES ? ` <small>+1 in ${Math.ceil(HOOK_RECHARGE - p.hookCharge)}s</small>` : ''} <kbd>X</kbd></span>` : '';
+    this.setHtml(this.throwEl, 'throw', `${th}${hook}<em><kbd>G</kbd> tap: throw · hold: wheel</em>`);
     this.updateWheel();
 
     // Flash / armor crack
@@ -612,7 +644,7 @@ export class Hud {
 
     // Crosshair
     // Always shown, fixed size, dead centre (only the sniper scope's own reticle replaces it).
-    const scoped = w?.def.id === 'sniper' && wpn.adsAmount > 0.85;
+    const scoped = (w?.def.id === 'sniper' || w?.def.id === 'dmr') && wpn.adsAmount > 0.85;
     const armed = (onFoot && !p.swimming) || p.mode === 'zipline';
     // Aiming down sights uses the gun's own sights / red dot instead.
     this.crosshair.style.display = !p.alive || (scoped && armed) || (w && wpn.adsAmount > 0.45) ? 'none' : '';
@@ -628,7 +660,10 @@ export class Hud {
       const n = this.numbers[i];
       n.life -= dt;
       n.pos.y += dt * 0.5;
-      const v = tmp.copy(n.pos).project(g.camera);
+      // Up and to the right of the enemy (not on top of him), sized by distance: closer hits read bigger.
+      const cam = g.camera, d = Math.max(1, cam.position.distanceTo(n.pos));
+      tmpR.setFromMatrixColumn(cam.matrixWorld, 0);
+      const v = tmp.copy(n.pos).addScaledVector(tmpR, 0.75).project(cam);
       if (n.life <= 0 || v.z > 1) {
         n.el.remove();
         this.numbers.splice(i, 1);
@@ -637,6 +672,7 @@ export class Hud {
       n.el.style.left = `${((v.x + 1) / 2) * innerWidth}px`;
       n.el.style.top = `${((1 - v.y) / 2) * innerHeight}px`;
       n.el.style.opacity = String(Math.min(1, n.life * 3));
+      n.el.style.setProperty('--dd', Math.min(1.7, Math.max(0.4, (14 / d) * (0.84 / Math.tan((cam.fov * Math.PI) / 360)))).toFixed(2));
     }
 
     // Hurt vignette + storm tint
@@ -666,11 +702,22 @@ export class Hud {
     const ch = wpn.channel;
     const reload = wpn.reloadProgress(p);
     if (ch || reload > 0) {
+      // A ring round the crosshair that fills up, with what's happening, the seconds left and how to cancel.
       this.channel.style.display = 'block';
-      const label = ch ? (ch.type === 'medkit' ? 'HEALING' : 'PLATING') : 'RELOADING';
-      this.setText(this.channel.querySelector('.label')!, 'chl', label);
-      (this.channel.querySelector('.fill') as HTMLElement).style.width = `${(ch ? ch.time / ch.total : reload) * 100}%`;
-    } else this.channel.style.display = 'none';
+      const kind = ch ? ch.type : 'reload';
+      if (this.channel.dataset.kind !== kind) {
+        this.channel.dataset.kind = kind;
+        this.channel.className = kind;
+        this.channel.querySelector('.label b')!.textContent = ch ? (ch.type === 'medkit' ? 'HEALING' : 'PLATING') : 'RELOADING';
+        this.channel.querySelector('.hint')!.innerHTML = ch ? '<kbd>R</kbd> / <kbd>LMB</kbd> cancel' : '<kbd>R</kbd> cancel';
+      }
+      const k = ch ? ch.time / ch.total : reload, left = ch ? ch.total - ch.time : wpn.reloadRemaining;
+      (this.channel.querySelector('.fg') as SVGCircleElement).style.strokeDashoffset = `${(1 - clamp(k, 0, 1)) * 100}`;
+      this.setText(this.channel.querySelector('.time')!, 'cht', `${Math.max(0, left).toFixed(1)}s`);
+    } else {
+      this.channel.style.display = 'none';
+      this.channel.dataset.kind = '';
+    }
 
     // Reminders under the crosshair: reload when the mag runs low, heal when you're hurt and safe to.
     let hint = '', hintCls = '';
@@ -1029,6 +1076,52 @@ export class Hud {
       }
     }
 
+    // The gulag, out at sea: a barred cell icon, pinned to the map's edge when it's off the map.
+    {
+      const gp = g.map.gulag, R = N / 2 - 13;
+      let x = sx(gp.x) - N / 2, y = sz(gp.z) - N / 2;
+      const d = Math.hypot(x, y), off = d > R;
+      if (off) [x, y] = [(x / d) * R, (y / d) * R];
+      x += N / 2;
+      y += N / 2;
+      const s = full ? 9 : 8;
+      ctx.save();
+      ctx.translate(x, y);
+      if (off) {
+        // Arrow nub pointing out toward it.
+        ctx.rotate(Math.atan2(y - N / 2, x - N / 2));
+        ctx.fillStyle = '#ff8a2a';
+        ctx.beginPath();
+        ctx.moveTo(s + 6, 0);
+        ctx.lineTo(s + 1, -4);
+        ctx.lineTo(s + 1, 4);
+        ctx.fill();
+        ctx.rotate(-Math.atan2(y - N / 2, x - N / 2));
+      }
+      ctx.fillStyle = '#1b1c20';
+      ctx.strokeStyle = '#ff8a2a';
+      ctx.lineWidth = 2;
+      ctx.fillRect(-s, -s, s * 2, s * 2);
+      ctx.strokeRect(-s, -s, s * 2, s * 2);
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      for (const bx of [-s * 0.45, 0, s * 0.45]) {
+        ctx.moveTo(bx, -s + 2);
+        ctx.lineTo(bx, s - 2);
+      }
+      ctx.stroke();
+      ctx.restore();
+      if (full) {
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(0,0,0,0.8)';
+        ctx.strokeText('GULAG', x, y + s + 13);
+        ctx.fillStyle = '#ff8a2a';
+        ctx.fillText('GULAG', x, y + s + 13);
+      }
+    }
+
     // Teammates
     for (const b of g.bots.mates) {
       if (!b.alive || b.mode === 'plane') continue;
@@ -1151,8 +1244,7 @@ export class Hud {
       xpEl.innerHTML = `<div class="xp-rows">${rows}<div class="xp-total"><span>TOTAL XP</span><b>+${xp.total}</b></div></div>
         <div class="xp-level">${xp.after > xp.before ? '<span class="lvlup">LEVEL UP!</span> ' : ''}LEVEL <b>${lvl}</b></div>
         <div class="xp-bar"><i style="width:${Math.round(((prof.data.xp - a) / (b - a)) * 100)}%"></i></div>
-        ${xp.unlocked.includes('Eclipse') ? `<div class="xp-unlock">LEVEL 100: the <b>ECLIPSE</b> set is yours — outfit, wrap, glider, trail, back bling and banner are in the Locker</div>` : xp.unlocked.length ? `<div class="xp-unlock">Unlocked camo: <b>${xp.unlocked.join(', ')}</b> — equip it under Wrap in the lobby</div>` : ''}
-        ${xp.botShift ? `<div class="xp-bots ${xp.botShift > 0 ? 'up' : 'down'}">${xp.botShift > 0 ? '▲ Bots are getting a little tougher' : '▼ Bots will go a little easier on you'}</div>` : ''}`;
+        ${xp.unlocked.includes('Eclipse') ? `<div class="xp-unlock">LEVEL 100: the <b>ECLIPSE</b> set is yours — outfit, wrap, glider, trail, back bling and banner are in the Locker</div>` : xp.unlocked.length ? `<div class="xp-unlock">Unlocked camo: <b>${xp.unlocked.join(', ')}</b> — equip it under Wrap in the lobby</div>` : ''}`;
     } else xpEl.innerHTML = this.game.cheats.used ? `<div class="xp-bots down">Admin tools were used: this match isn't saved to your career</div>` : '';
     this.showOverlay('end');
   }
@@ -1162,4 +1254,4 @@ function escapeHtml(s: string) {
   return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 }
 
-const tmp = new Vector3();
+const tmp = new Vector3(), tmpR = new Vector3();

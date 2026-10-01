@@ -4,7 +4,7 @@ import {
 } from 'three';
 import { mergeToGeometry } from '../core/merge';
 import {
-  AMMO_INFO, AMMO_TYPES, ATT_KINDS, attKey, ATTACHMENTS, boxMesh, buildGunModel, darken, makeWeapon, randomRarity, randomWeaponId, RARITIES, THROWABLES,
+  AMMO_INFO, AMMO_TYPES, ATT_KINDS, attKey, ATTACHMENTS, boxMesh, buildGunModel, darken, makeWeapon, randomRarity, randomWeaponId, RARITIES, THROWABLES, WEB_ENABLED,
   type AmmoType, type AttachmentKind, type ThrowKind, type WeaponId, type WeaponInstance,
 } from './Weapon';
 
@@ -70,7 +70,7 @@ export function lootLabel(k: LootKind): string {
 
 export function randomThrowable(count: number): LootKind {
   const r = Math.random();
-  if (Math.random() < 0.3) return { type: 'throwable', t: 'grapple', count: 3 };
+  if (WEB_ENABLED && Math.random() < 0.3) return { type: 'throwable', t: 'grapple', count: 3 };
   return { type: 'throwable', t: r < 0.5 ? 'frag' : r < 0.78 ? 'smoke' : 'flash', count };
 }
 
@@ -102,6 +102,15 @@ export class LootManager {
   onOpen: (c: Chest) => void = () => {};
   /** Online: told about every item that appears or goes, and every chest opened here. */
   onSpawn: ((it: LootItem) => void) | null = null;
+  /** Free height straight up from a point (so beams stop at the ceiling instead of poking through floors). */
+  headroom: ((p: Vector3, max: number) => number) | null = null;
+
+  /** Puts a beam at `p`, cut off at whatever is overhead. */
+  seatBeam(beam: Mesh, p: Vector3, full: number) {
+    beam.position.copy(p);
+    beam.scale.y = Math.max(0.3, Math.min(full, this.headroom ? this.headroom(p, full) - 0.05 : full));
+    beam.userData.full = full;
+  }
   onRemove: ((it: LootItem) => void) | null = null;
   onChest: ((c: Chest) => void) | null = null;
   private time = 0;
@@ -156,8 +165,7 @@ export class LootManager {
     const color = kind.type === 'weapon' && kind.weapon.rarity.tier >= 1 ? kind.weapon.rarity.color : kind.type === 'attachment' ? ATTACHMENTS[kind.att].color : -1;
     if (color >= 0) {
       beam = new Mesh(beamGeo, beamMat(color));
-      beam.scale.y = kind.type === 'weapon' ? 5 + kind.weapon.rarity.tier * 2 : 6;
-      beam.position.copy(pos);
+      this.seatBeam(beam, pos, kind.type === 'weapon' ? 5 + kind.weapon.rarity.tier * 2 : 6);
       this.scene.add(beam);
     }
     const item: LootItem = { kind, pos: pos.clone(), key, beam, alive: true, phase: Math.random() * 6 };
@@ -247,7 +255,7 @@ export class LootManager {
       pile.push({ type: 'ammo', ammo: t, amount: AMMO_INFO[t].pickup });
     }
     pile.push(randomThrowable(c.supply ? 2 : 1));
-    if (c.supply || Math.random() < 0.3) pile.push({ type: 'throwable', t: 'grapple', count: 3 });
+    if (WEB_ENABLED && (c.supply || Math.random() < 0.3)) pile.push({ type: 'throwable', t: 'grapple', count: 3 });
     const front = new Vector3(0, 0, 1.2).applyAxisAngle(new Vector3(0, 1, 0), c.mesh.rotation.y);
     // Everything pops out of the open lid and arcs onto the floor in front.
     const lip = c.pos.clone().setY(c.pos.y + (c.supply ? 1.1 : 0.5));
@@ -294,7 +302,7 @@ export class LootManager {
         pile.push({ type: 'ammo', ammo: t, amount: AMMO_INFO[t].pickup });
       } else if (r < 0.85) pile.push(randomThrowable(1));
       else if (r < 0.9) pile.push({ type: 'plate', count: 1 });
-      else pile.push({ type: 'throwable', t: 'grapple', count: 3 });
+      else pile.push(WEB_ENABLED ? { type: 'throwable', t: 'grapple', count: 3 } : { type: 'medkit', count: 1 });
       this.spawnPile(pile, s);
     }
   }

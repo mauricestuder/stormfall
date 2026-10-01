@@ -11,24 +11,24 @@ export const CONFIG = {
     eyeCrouch: 1.0,
     eyeSlide: 0.8,
 
-    walkSpeed: 6.2,
-    sprintSpeed: 9.8,
-    crouchSpeed: 3.4,
-    adsSpeed: 4.6,
+    walkSpeed: 5.6,
+    sprintSpeed: 8.8,
+    crouchSpeed: 3.1,
+    adsSpeed: 4.2,
     groundAccel: 110,
     stopDecel: 170,
     momentumDecel: 4.5, // how fast extra speed (from slides / slide-jumps) bleeds off on the ground
-    airAccel: 34,
-    jumpVelocity: 7.8,
-    gravity: 21,
+    airAccel: 30,
+    jumpVelocity: 7.4,
+    gravity: 19,
     stepHeight: 0.55,
 
-    slideBoost: 4.6,
-    slideMaxSpeed: 16,
+    slideBoost: 4.1,
+    slideMaxSpeed: 14.4,
     slideFriction: 3.8,
     slideEndSpeed: 4.0,
     slideCooldown: 0.7, // boost cooldown; you can still slide without the boost
-    slideDownhillMax: 28, // sliding down a slope can build speed up to this
+    slideDownhillMax: 25, // sliding down a slope can build speed up to this
     slideSteer: 2.0, // rad/s of steering while sliding
 
     maxHealth: 100,
@@ -49,14 +49,14 @@ export const CONFIG = {
 
   drop: {
     planeAltitude: 420,
-    planeSpeed: 75,
-    freefallSpeed: 55,
-    diveSpeed: 80,
-    freefallHorizontal: 38,
+    planeSpeed: 66,
+    freefallSpeed: 49,
+    diveSpeed: 70,
+    freefallHorizontal: 34,
     deployAltitude: 90,
     minManualDeploy: 25,
-    glideFall: 9,
-    glideHorizontal: 22,
+    glideFall: 8,
+    glideHorizontal: 19.5,
   },
 
   zone: {

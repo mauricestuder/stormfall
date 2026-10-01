@@ -1,4 +1,5 @@
-import { Group, Mesh, Scene, Vector3 } from 'three';
+import { CircleGeometry, Group, Mesh, MeshLambertMaterial, Scene, Shape, ShapeGeometry, Vector3 } from 'three';
+import { TOY } from '../theme';
 import { CONFIG } from '../config';
 import { boxMesh } from '../weapons/Weapon';
 
@@ -52,7 +53,9 @@ export class Plane {
       g.add(m);
       return m;
     };
-    const WHITE = 0xe8ecf0, GREY = 0xb9c2ca, RED = 0xd04a3a, GOLD = 0xffb020, DARK = 0x2c323a, GLASS = 0x1d2a3a;
+    // Toy Box: a moulded olive-drab army transport from the playset bag, stars on the wings.
+    const WHITE = TOY ? 0x5f7d36 : 0xe8ecf0, GREY = TOY ? 0x4e6a2c : 0xb9c2ca, RED = TOY ? 0x44602a : 0xd04a3a, GOLD = TOY ? 0xd9d2b0 : 0xffb020, DARK = 0x2c323a, GLASS = 0x1d2a3a;
+    const WING = TOY ? 0x57753a : 0xc9d0d6, FLAP = TOY ? 0x4a6430 : 0x9aa3ab, ENGINE = TOY ? 0x4a5f2c : 0x5b6470;
     // Fuselage
     add(4.5, 4.5, 28, WHITE, 0, 0, 0);
     add(3.6, 0.7, 24, WHITE, 0, 2.55, 0.5);
@@ -76,16 +79,16 @@ export class Plane {
     glass.rotation.x = -0.45;
     for (const x of [-1.72, 1.72]) add(0.1, 0.6, 1.2, GLASS, x, 1.3, -15.2, 0x0a1826);
     // Wings with flaps and nav lights
-    add(38, 0.6, 6, 0xc9d0d6, 0, -0.5, -2);
-    add(34, 0.3, 1.3, 0x9aa3ab, 0, -0.55, 1.6);
+    add(38, 0.6, 6, WING, 0, -0.5, -2);
+    add(34, 0.3, 1.3, FLAP, 0, -0.55, 1.6);
     add(38.2, 0.62, 0.8, GOLD, 0, -0.5, -4.7);
     this.beacon.push(add(0.7, 0.7, 1, 0xff3030, -19.2, -0.5, -2, 0xff2020));
     this.beacon.push(add(0.7, 0.7, 1, 0x30ff60, 19.2, -0.5, -2, 0x20ff50));
     // Four engines with propellers
     for (const x of [-13, -7, 7, 13]) {
-      add(2, 2, 5.5, 0x5b6470, x, -1.4, -3);
+      add(2, 2, 5.5, ENGINE, x, -1.4, -3);
       add(2.3, 2.3, 0.5, DARK, x, -1.4, -5.8);
-      add(1.2, 0.5, 2, 0x444b53, x, -2.5, -0.5);
+      add(1.2, 0.5, 2, TOY ? 0x3c4f24 : 0x444b53, x, -2.5, -0.5);
       const prop = new Group();
       prop.position.set(x, -1.4, -6.3);
       const hub = boxMesh(0.7, 0.7, 0.8, RED);
@@ -102,16 +105,46 @@ export class Plane {
     bolt1.rotation.x = 0.5;
     const bolt2 = add(0.7, 1.6, 0.4, GOLD, 0, 2.7, 12.9, 0x6a4a00);
     bolt2.rotation.x = 0.5;
-    add(13, 0.5, 3, 0xc9d0d6, 0, 1.5, 13.4);
+    add(13, 0.5, 3, WING, 0, 1.5, 13.4);
     add(3.8, 3.8, 0.2, 0x181b20, 0, -0.1, 14.05);
-    const ramp = add(3.6, 0.3, 4, 0x9aa3ab, 0, -3.2, 15.6);
+    const ramp = add(3.6, 0.3, 4, FLAP, 0, -3.2, 15.6);
     ramp.rotation.x = 0.35;
     // Belly gear pods and a roof antenna
-    for (const x of [-2.6, 2.6]) add(1.2, 1.1, 4.5, 0x8a939c, x, -2.3, 0);
+    for (const x of [-2.6, 2.6]) add(1.2, 1.1, 4.5, TOY ? 0x4a6430 : 0x8a939c, x, -2.3, 0);
     add(0.15, 1.3, 0.15, DARK, 0, 3.4, -6);
     add(0.12, 0.12, 2.2, DARK, 0, 4.0, -6.8);
     this.beacon.push(add(0.5, 0.4, 0.5, 0xff3030, 0, 3.05, 3, 0xff2020));
+    if (TOY) this.addStars(g);
     return g;
+  }
+
+  /** White army stars in a ring on both wings (top and bottom) and the fuselage sides. */
+  private addStars(g: Group) {
+    const star = new Shape();
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2 + Math.PI / 2, r = i % 2 ? 0.38 : 1;
+      if (i) star.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+      else star.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+    }
+    const starGeo = new ShapeGeometry(star), ring = new CircleGeometry(1.25, 28);
+    const white = new MeshLambertMaterial({ color: 0xf2efe2 }), olive = new MeshLambertMaterial({ color: 0x3c5424 });
+    const put = (x: number, y: number, z: number, rx: number, ry: number, s: number) => {
+      const disc = new Mesh(ring, olive), st = new Mesh(starGeo, white);
+      for (const [m, k, lift] of [[disc, 1, 0], [st, 0.95, 0.02]] as const) {
+        m.position.set(x, y, z);
+        m.rotation.set(rx, ry, 0, 'YXZ');
+        m.scale.setScalar(s * k);
+        m.translateZ(lift);
+        g.add(m);
+      }
+    };
+    for (const x of [-11, 11]) {
+      put(x, -0.18, -2, -Math.PI / 2, 0, 2);
+      put(x, -0.82, -2, Math.PI / 2, 0, 2);
+    }
+    for (const x of [-2.33, 2.33]) put(x, 0.2, 1.8, 0, x > 0 ? Math.PI / 2 : -Math.PI / 2, 1.3);
+    put(0.33, 4.3, 12.4, 0, Math.PI / 2, 1.1);
+    put(-0.33, 4.3, 12.4, 0, -Math.PI / 2, 1.1);
   }
 
   position(out: Vector3) {

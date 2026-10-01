@@ -19,8 +19,8 @@ function savedWorld(): string | undefined {
 }
 
 /**
- * TOY BOX (the default world): the island is a playset inside a giant open toy chest. Plastic-brick
- * towns, a ball-pit sea, giant toys lying around, toy characters (mini figures, army men, teddies,
- * wind-up robots), foam blasters, and toy bosses guarding mythic guns. 'classic' is the old look.
+ * TOY BOX (the default world): the island is a green-army-men playset. Tan and olive plastic towns,
+ * moulded trees, sandbags and tank traps, clear blue water, giant toys lying around, army-men
+ * enemies, foam blasters, and toy bosses guarding mythic guns. 'classic' is the old look.
  */
 export const TOY = THEME === 'world' && savedWorld() !== 'classic';

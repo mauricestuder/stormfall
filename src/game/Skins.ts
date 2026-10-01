@@ -36,9 +36,9 @@ const toy = (name: string, desc: string, body: BodyKind, suit: number, trim: num
   glider: suit, crest: 'none', level,
 });
 const TOY_SKINS: Skin[] = TOY ? [
-  toy('Green Army Man', 'The classic little green plastic soldier, base and all.', 'armyman', 0x3f8a2a, 0x2a5a1a),
-  toy('Tan Army Man', 'The other side of the playroom war.', 'armyman', 0xb8965a, 0x7a6038, 3),
-  toy('Blue Army Man', 'Navy plastic, same old bedroll.', 'armyman', 0x3a62c0, 0x243f80, 6),
+  toy('Green Army Man', 'The classic little green plastic soldier.', 'armyman', 0x234a16, 0x16300e),
+  toy('Tan Army Man', 'The other side of the playroom war.', 'armyman', 0x7a6038, 0x544026, 3),
+  toy('Blue Army Man', 'Navy plastic, same old bedroll.', 'armyman', 0x223c7a, 0x162850, 6),
   toy('Teddy', 'A well-loved bear with a bow tie.', 'teddy', 0x9a6232, 0xe3342f, 9),
   toy('Wind-Up Robot', 'Tin plate, rivets and a big key in the back.', 'robot', 0xb8c0ca, 0xe3342f, 12),
   toy('Mini Figure', 'Yellow head, claw hands, clicks together.', 'minifig', 0xe3342f, 0x2a4ab8, 15),

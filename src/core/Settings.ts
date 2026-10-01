@@ -1,4 +1,4 @@
-export type Quality = 'low' | 'medium' | 'high';
+export type Quality = 'low' | 'medium' | 'high' | 'epic';
 export type Difficulty = 'easy' | 'normal' | 'hard';
 export type TimeOfDay = 'random' | 'day' | 'sunset' | 'night';
 export type Weather = 'random' | 'clear' | 'rain' | 'fog';

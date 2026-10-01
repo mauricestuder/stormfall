@@ -27,10 +27,10 @@ export interface BossDef {
 }
 
 export const BOSSES: BossDef[] = [
-  { id: 'ted', name: 'Big Ted', title: 'THE HUGGIEST BEAR', kind: 'teddy', suit: 0x9a6232, trim: 0xe3342f, size: 2.3, health: 1500, gun: 'stuffing', dmgMul: 0.25, color: '#c07a3a' },
-  { id: 'max', name: 'Mecha-Max', title: 'WIND-UP WAR MACHINE', kind: 'robot', suit: 0xb8c0ca, trim: 0xe3342f, size: 2.4, health: 1700, gun: 'windup', dmgMul: 0.38, color: '#9fb4c8' },
-  { id: 'sarge', name: 'Sergeant Plastic', title: 'LEADER OF THE GREEN ARMY', kind: 'armyman', suit: 0x3f8a2a, trim: 0x2a5a1a, size: 2.5, health: 1400, gun: 'marble', dmgMul: 0.45, color: '#5aa83a' },
-  { id: 'jack', name: 'Jack the Clown', title: 'POPS OUT OF NOWHERE', kind: 'minifig', suit: 0xff3fd0, trim: 0xffc21a, size: 2.2, health: 1200, gun: 'cork', dmgMul: 0.4, color: '#ff5ad8' },
+  { id: 'ted', name: 'Big Ted', title: 'THE HUGGIEST BEAR', kind: 'teddy', suit: 0x9a6232, trim: 0xe3342f, size: 2.3, health: 1950, gun: 'stuffing', dmgMul: 0.2, color: '#c07a3a' },
+  { id: 'max', name: 'Mecha-Max', title: 'WIND-UP WAR MACHINE', kind: 'robot', suit: 0xb8c0ca, trim: 0xe3342f, size: 2.4, health: 2200, gun: 'windup', dmgMul: 0.3, color: '#9fb4c8' },
+  { id: 'sarge', name: 'Sergeant Plastic', title: 'LEADER OF THE GREEN ARMY', kind: 'armyman', suit: 0x3f8a2a, trim: 0x2a5a1a, size: 2.5, health: 1800, gun: 'marble', dmgMul: 0.36, color: '#5aa83a' },
+  { id: 'jack', name: 'Jack the Clown', title: 'POPS OUT OF NOWHERE', kind: 'minifig', suit: 0xff3fd0, trim: 0xffc21a, size: 2.2, health: 1550, gun: 'cork', dmgMul: 0.32, color: '#ff5ad8' },
 ];
 
 /** How far from home a boss chases you before giving up. */
@@ -81,6 +81,7 @@ function makeBoss(game: Game, def: BossDef, id: number, home: Vector3) {
   // Swap the random body for the boss's: a giant with a crown.
   game.scene.remove(bot.character.root);
   bot.character = new Character(new Color(def.suit), new Color(def.trim), undefined, undefined, false, def.kind, true);
+  bot.character.outline(0xc81c1c);
   bot.character.size = def.size;
   game.scene.add(bot.character.root);
   bot.team = 1000 + id;

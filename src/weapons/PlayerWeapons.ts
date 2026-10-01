@@ -1,4 +1,4 @@
-import { BufferGeometry, CylinderGeometry, Line, LineDashedMaterial, Mesh, MeshLambertMaterial, PerspectiveCamera, Vector3 } from 'three';
+import { CylinderGeometry, Mesh, MeshLambertMaterial, PerspectiveCamera, Vector3 } from 'three';
 import { CONFIG } from '../config';
 import type { Input } from '../core/Input';
 import { clamp, damp, lerp } from '../core/rng';
@@ -6,14 +6,14 @@ import { applySpread } from '../game/Combat';
 import type { Game } from '../game/Game';
 import type { Player } from '../player/Player';
 import { ViewModel, type ReloadAnim } from './ViewModel';
-import { adsSpreadOf, magSize, recoilKick, THROWABLES, type ThrowKind, type WeaponInstance, FISTS } from './Weapon';
+import { adsSpreadOf, magSize, recoilKick, THROWABLES, WEB_ENABLED, type ThrowKind, type WeaponInstance, FISTS } from './Weapon';
 
 const P = CONFIG.player;
 const SHELL_TIME = 0.45, SHELL_START = 0.3, SHELL_END = 0.4;
 /** Pause between bursts of the burst rifle. */
 const BURST_GAP = 0.26;
 /** Grappling hook: charges, and seconds for each one to come back. */
-export const HOOK_CHARGES = 3, HOOK_RECHARGE = 30;
+export const HOOK_CHARGES = 6, HOOK_RECHARGE = 6, WEB_RANGE = 150;
 const THROW_ORDER: ThrowKind[] = ['frag', 'smoke', 'flash'];
 /** Hold G this long and the grenade wheel opens (a quick tap just takes out the current grenade). */
 const WHEEL_DELAY = 0.18;
@@ -40,14 +40,14 @@ export class PlayerWeapons {
   recoilYaw = 0;
   channel: Channel | null = null;
   view: ViewModel;
-  /** A grenade is in your hand: the throw arc is showing (left click or G throws, right click puts it away). */
-  aimingThrow = false;
   /** Grenade wheel (hold G): open, where the cursor is (pixels from the centre), and which slice it's on. */
   wheel = { open: false, x: 0, y: 0, sel: 'frag' as ThrowKind };
   private gHeld = 0;
   shotsFired = 0;
   private reloadKind: ReloadKind = 'mag';
   private reloadTotal = 1;
+  /** A heal was just cancelled with R: don't also start a reload on the same press. */
+  private cancelledThisFrame = false;
   private sinceShot = 99;
   private reloadWeapon: WeaponInstance | null = null;
   /** Reload foley is scheduled ahead; silence it if the reload gets interrupted. */
@@ -56,16 +56,9 @@ export class PlayerWeapons {
   private sprayIdx = 0;
   private burstLeft = 0;
   private throwCd = 0;
-  private arc: Line;
-  private arcPts: Vector3[] = [];
 
   constructor(camera: PerspectiveCamera, private game: Game) {
     this.view = new ViewModel(camera, game.scene);
-    this.arc = new Line(new BufferGeometry(), new LineDashedMaterial({ color: 0xffffff, dashSize: 0.35, gapSize: 0.2, transparent: true, opacity: 0.85, depthTest: false }));
-    this.arc.renderOrder = 5;
-    this.arc.frustumCulled = false;
-    this.arc.visible = false;
-    game.scene.add(this.arc);
   }
 
   get reloading() {
@@ -100,11 +93,12 @@ export class PlayerWeapons {
     if (this.sinceShot > 0.35) this.sprayIdx = 0;
 
     if (!this.armed(player)) {
+      if (this.reloadLeft > 0 || this.channel) this.game.sfx.cancelReload();
+      this.reloadLeft = 0;
+      this.channel = null;
       player.ads = false;
-      this.aimingThrow = false;
       this.wheel.open = false;
       this.gHeld = 0;
-      this.arc.visible = false;
       this.burstLeft = 0;
       return;
     }
@@ -138,8 +132,13 @@ export class PlayerWeapons {
 
     this.updateThrow(dt, input, player);
 
-    // Healing / plating
-    if (!this.channel) {
+    // Healing / plating. Any of: the same key again, R, aiming or shooting cancels it at any moment.
+    if (this.channel && ((input.pressed('KeyH') && this.channel.type === 'medkit') || (input.pressed('KeyV') && this.channel.type === 'plate')
+      || input.pressed('KeyR') || input.mousePressed[2] || input.mousePressed[0])) {
+      this.channel = null;
+      this.game.sfx.cancelReload();
+      this.cancelledThisFrame = true;
+    } else if (!this.channel) {
       if (input.pressed('KeyH') && player.medkits > 0 && player.health < P.maxHealth) {
         this.channel = { type: 'medkit', time: 0, total: P.medkitTime };
         this.reloadLeft = 0;
@@ -169,7 +168,7 @@ export class PlayerWeapons {
 
     // Hands out: punch.
     this.punchCd -= dt;
-    if (player.unarmed && input.mouseDown[0] && this.punchCd <= 0 && !this.channel && !this.aimingThrow) this.punch(player);
+    if (player.unarmed && input.mouseDown[0] && this.punchCd <= 0 && !this.channel) this.punch(player);
     if (player.unarmed && input.pressed('KeyY')) this.view.inspect();
 
     // Toggle aim: right-click flips aiming on and off instead of holding.
@@ -177,22 +176,25 @@ export class PlayerWeapons {
     if (this.toggleAim && rmb && !this.rmbWas) this.aimLatched = !this.aimLatched;
     this.rmbWas = rmb;
     if (!w || this.switchLeft > 0) this.aimLatched = false;
-    player.ads = !!w && (this.toggleAim ? this.aimLatched : rmb) && this.switchLeft <= 0 && !this.channel && !this.aimingThrow;
+    player.ads = !!w && (this.toggleAim ? this.aimLatched : rmb) && this.switchLeft <= 0 && !this.channel;
     this.adsAmount = damp(this.adsAmount, player.ads ? 1 : 0, 16 * this.adsSpeed, dt);
     if (!w) return;
 
-    // Reload (shotguns load shell by shell and can be interrupted by firing)
-    if (this.reloadLeft > 0) {
+    // Reload (shotguns load shell by shell). Firing with rounds left, or R again, stops it at any moment.
+    const cancelled = this.cancelledThisFrame;
+    this.cancelledThisFrame = false;
+    if (this.reloadLeft > 0 && input.pressed('KeyR') && this.reloadTotal - this.reloadLeft > 0.12) this.reloadLeft = 0;
+    else if (this.reloadLeft > 0) {
       this.reloadLeft -= dt;
       if (this.reloadLeft <= 0) this.advanceReload(w, player);
-    } else if (input.pressed('KeyR') && w.mag < magSize(w) && player.ammo[w.def.ammo] > 0 && !this.channel) {
+    } else if (input.pressed('KeyR') && !cancelled && w.mag < magSize(w) && player.ammo[w.def.ammo] > 0 && !this.channel) {
       this.startReload(w);
     }
 
     // Fire (burst rifles keep going until the burst is done)
     const trigger = w.def.auto ? input.mouseDown[0] : input.mousePressed[0];
-    if (trigger && this.reloadLeft > 0 && this.reloadKind !== 'mag' && w.mag > 0) this.reloadLeft = 0;
-    const ready = this.cooldown <= 0 && this.reloadLeft <= 0 && this.switchLeft <= 0 && !this.channel && !this.aimingThrow;
+    if (trigger && this.reloadLeft > 0 && w.mag > 0) this.reloadLeft = 0;
+    const ready = this.cooldown <= 0 && this.reloadLeft <= 0 && this.switchLeft <= 0 && !this.channel;
     if (this.burstLeft > 0) {
       if (ready && w.mag > 0) {
         this.fire(w, player);
@@ -200,7 +202,6 @@ export class PlayerWeapons {
       } else if (w.mag <= 0) this.burstLeft = 0;
       return;
     }
-    if (trigger && this.channel?.type === 'plate' && this.channel.time < 0.2) this.channel = null;
     if (trigger && ready) {
       if (w.mag <= 0) {
         if (player.ammo[w.def.ammo] > 0) this.startReload(w);
@@ -242,17 +243,10 @@ export class PlayerWeapons {
     }
   }
 
-  private startThrowAim(player: Player) {
-    if (player.throwables[player.throwSel] <= 0 || this.throwCd > 0 || this.channel) return;
-    this.aimingThrow = true;
-    this.reloadLeft = 0;
-    this.burstLeft = 0;
-    this.game.sfx.pin();
-  }
-
   private updateThrow(dt: number, input: Input, player: Player) {
-    // G: tap to take out your grenade, hold for the wheel; letting go picks the slice under the cursor.
+    // G: throws your grenade the instant it's pressed; keep holding for the wheel to pick the next type.
     const w = this.wheel;
+    if (input.pressed('KeyG') && !this.channel && this.throwCd <= 0) this.throwNow(player);
     if (input.isDown('KeyG') && !this.channel) {
       this.gHeld += dt;
       if (this.gHeld >= WHEEL_DELAY && !w.open) {
@@ -265,12 +259,9 @@ export class PlayerWeapons {
       this.gHeld = 0;
       if (w.open) {
         w.open = false;
-        if (player.throwables[w.sel] > 0) {
-          player.throwSel = w.sel;
-          this.startThrowAim(player);
-        } else this.game.hud.pickupToast(`No ${THROWABLES[w.sel].name}s`, '#ff8a6b');
-      } else if (this.aimingThrow) this.throwNow(player);
-      else this.startThrowAim(player);
+        if (player.throwables[w.sel] > 0) player.throwSel = w.sel;
+        else this.game.hud.pickupToast(`No ${THROWABLES[w.sel].name}s`, '#ff8a6b');
+      }
     }
     if (input.pressed('KeyZ')) {
       // Cycle to the next type you actually carry.
@@ -288,27 +279,9 @@ export class PlayerWeapons {
       const any = THROW_ORDER.find((t) => player.throwables[t] > 0);
       if (any) player.throwSel = any;
     }
-    const have = player.throwables[player.throwSel] > 0;
-    if (this.aimingThrow && (!have || this.channel)) this.aimingThrow = false;
-    if (this.aimingThrow && !w.open) {
-      if (input.mousePressed[0]) return this.throwNow(player);
-      if (input.mousePressed[2]) {
-        this.aimingThrow = false;
-        this.arc.visible = false;
-        return;
-      }
-      const { from, vel } = this.throwParams(player);
-      this.game.projectiles.predict(from, vel, this.arcPts);
-      this.arc.geometry.setFromPoints(this.arcPts);
-      this.arc.computeLineDistances();
-      this.arc.visible = true;
-      (this.arc.material as LineDashedMaterial).color.setHex(THROWABLES[player.throwSel].color | 0x404040);
-    } else this.arc.visible = false;
   }
 
   private throwNow(player: Player) {
-    this.aimingThrow = false;
-    this.arc.visible = false;
     if (player.throwables[player.throwSel] <= 0) return;
     const { from, vel } = this.throwParams(player);
     this.game.projectiles.throw(player.throwSel, from, vel, player);
@@ -320,8 +293,14 @@ export class PlayerWeapons {
 
   private rope: Mesh | null = null;
 
-  /** Grappling hook (X): hooks whatever you're looking at within 70 m and reels you in. */
+  /** Web shooter (hold X): sticks a line to whatever you're looking at within 150 m and swings you on it for as long as X is held; letting go of X (or Space) drops the line. */
   private updateGrapple(dt: number, input: Input, player: Player) {
+    if (!WEB_ENABLED) {
+      player.throwables.grapple = 0;
+      player.hookOwned = false;
+      player.grapple = null;
+      return;
+    }
     // Once you own a hook it has 3 charges, and they come back one at a time.
     if (player.throwables.grapple > 0) player.hookOwned = true;
     if (player.hookOwned && player.throwables.grapple < HOOK_CHARGES) {
@@ -331,22 +310,24 @@ export class PlayerWeapons {
         player.throwables.grapple++;
       }
     } else player.hookCharge = 0;
-    if (input.pressed('KeyX') && !player.throwables.grapple && player.mode === 'ground') {
-      if (player.hookOwned) this.game.hud.pickupToast(`Hook recharging: next charge in ${Math.ceil(HOOK_RECHARGE - player.hookCharge)} s`, '#ff8a6b');
-      else this.game.hud.pickupToast('No grappling hook: find a blue hook on the ground (3 charges, they recharge)', '#ff8a6b');
+    player.webCd -= dt;
+    const canWeb = player.webCd <= 0 && (player.mode === 'ground' || player.mode === 'glide') && !player.grapple && !player.swimming && !player.mantle && !player.frozen;
+    if (input.pressed('KeyX') && !player.throwables.grapple && canWeb) {
+      if (player.hookOwned) this.game.hud.pickupToast(`Web recharging: next shot in ${Math.ceil(HOOK_RECHARGE - player.hookCharge)} s`, '#ff8a6b');
+      else this.game.hud.pickupToast('No web shooter: find a blue one on the ground (6 shots, they recharge)', '#ff8a6b');
     }
-    if (input.pressed('KeyX') && player.throwables.grapple > 0 && player.mode === 'ground' && !player.grapple && !player.swimming && !player.mantle && !player.frozen) {
+    if (input.pressed('KeyX') && player.throwables.grapple > 0 && canWeb) {
       const cam = this.game.camera, o = cam.getWorldPosition(tmpO), dir = cam.getWorldDirection(tmpF);
-      const d = this.game.world.raycast(o, dir, 70);
-      if (d < 70 && d > 2.5) {
+      const d = this.game.world.raycast(o, dir, WEB_RANGE);
+      if (d < WEB_RANGE && d > 2.5) {
         player.startGrapple(o.clone().addScaledVector(dir, d - 0.3));
         player.throwables.grapple--;
         this.game.sfx.throwWhoosh();
-      } else this.game.hud.pickupToast('Nothing in reach to hook', '#ff8a6b');
+      } else this.game.hud.pickupToast('Nothing in reach for the web', '#ff8a6b');
     }
     if (player.grapple) {
       if (!this.rope) {
-        this.rope = new Mesh(new CylinderGeometry(0.025, 0.025, 1, 5).rotateX(Math.PI / 2), new MeshLambertMaterial({ color: 0x2a2a2a }));
+        this.rope = new Mesh(new CylinderGeometry(0.02, 0.02, 1, 5).rotateX(Math.PI / 2), new MeshLambertMaterial({ color: 0xf4f4f4, emissive: 0x555555 }));
         this.game.scene.add(this.rope);
       }
       const from = this.game.camera.getWorldPosition(tmpO);
@@ -475,20 +456,25 @@ export class PlayerWeapons {
   /** Viewmodel animation; runs every render frame. */
   animate(dt: number, player: Player) {
     const w = player.weapon;
-    const sniperScoped = w?.def.id === 'sniper' && this.adsAmount > 0.85;
+    const sniperScoped = (w?.def.id === 'sniper' || w?.def.id === 'dmr') && this.adsAmount > 0.85;
     const glide = player.mode === 'glide' && player.alive;
     this.view.setVisible((this.armed(player) && !sniperScoped && player.alive) || glide);
     this.view.update(dt, {
       player,
       ads: this.adsAmount,
       equip: Math.max(0, this.switchLeft) / 0.4,
-      busy: !!this.channel || this.aimingThrow,
+      busy: !!this.channel,
       heal: this.channel ? { type: this.channel.type, t: clamp(this.channel.time / this.channel.total, 0, 1) } : null,
       reload: this.reloadAnim(),
       sinceShot: this.sinceShot,
       cycle: w ? 60 / w.def.rpm : 1,
       glide,
     });
+  }
+
+  /** Seconds left on the current reload step. */
+  get reloadRemaining() {
+    return Math.max(0, this.reloadLeft);
   }
 
   reloadProgress(player: Player) {
@@ -505,10 +491,8 @@ export class PlayerWeapons {
     this.channel = null;
     this.reloadLeft = 0;
     this.burstLeft = 0;
-    this.aimingThrow = false;
     this.wheel.open = false;
     this.gHeld = 0;
-    this.arc.visible = false;
   }
 }
 

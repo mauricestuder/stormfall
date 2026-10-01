@@ -124,7 +124,7 @@ export class Environment {
     this.exposure = L.exposure;
     this.stars.visible = this.tod === 'night' && this.wx === 'clear';
     this.rain.visible = this.wx === 'rain';
-    this.fogMul = this.wx === 'fog' ? 0.32 : this.wx === 'rain' ? 0.6 : this.tod === 'night' ? 0.8 : 1;
+    this.fogMul = (this.wx === 'fog' ? 0.32 : this.wx === 'rain' ? 0.6 : this.tod === 'night' ? 0.8 : 1);
     this.visionMul = (this.tod === 'night' ? 0.8 : 1) * (this.wx === 'fog' ? 0.55 : this.wx === 'rain' ? 0.8 : 1);
     this.sfx.setRain(this.wx === 'rain' ? 1 : 0);
   }

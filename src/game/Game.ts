@@ -1,6 +1,6 @@
 import {
-  ACESFilmicToneMapping, DirectionalLight, Fog, HemisphereLight, MeshLambertMaterial, PCFShadowMap, PerspectiveCamera,
-  Scene, SRGBColorSpace, Vector3, WebGLRenderer,
+  ACESFilmicToneMapping, DirectionalLight, Fog, HemisphereLight, MeshLambertMaterial, PCFShadowMap, PCFSoftShadowMap, PerspectiveCamera,
+  Scene, SRGBColorSpace, Vector2, Vector3, WebGLRenderer,
 } from 'three';
 import { adaptTuning, Bot, DIFFICULTY, type BotTuning } from '../bots/Bot';
 import { BotManager } from '../bots/BotManager';
@@ -25,6 +25,8 @@ import {
 } from '../weapons/Weapon';
 import { Features } from '../world/Features';
 import { Tumbleweeds } from '../world/Tumbleweeds';
+import { Ambient } from '../world/Ambient';
+import { Fires } from '../world/Fires';
 import { Train, type Cargo } from '../world/Train';
 import { THEME, TOY } from '../theme';
 import { spawnBosses } from '../bots/Boss';
@@ -37,7 +39,7 @@ import { handColor, skinOf } from './Skins';
 import { applyEnvironment } from './Look';
 import { GLIDERS, TRAILS, trailColor } from './Cosmetics';
 import { Lobby } from './Lobby';
-import { GameMap } from '../world/Map';
+import { GameMap, type POI } from '../world/Map';
 import { applyDamage, rayHitCombatant, type Combatant } from './Combat';
 import { Arena, planArenaBots } from './Arena';
 import { Cheats, cheatOn } from './Cheats';
@@ -47,6 +49,7 @@ import { Plane } from './DropPhase';
 import { Environment } from './Environment';
 import { Killcam } from './Killcam';
 import { DEATH_CAM_MS, DeathCam } from './DeathCam';
+import { SelfBody } from '../player/SelfBody';
 import { LoadScreen, type LoadInfo } from '../ui/LoadScreen';
 import { setBodyStyle } from '../bots/Character';
 import { Music, type SongName } from './Music';
@@ -96,6 +99,10 @@ export class Game {
   features!: Features;
   /** Western: tumbleweeds blowing across the desert. */
   tumbleweeds: Tumbleweeds | null = null;
+  /** Birds and butterflies. */
+  ambient!: Ambient;
+  fires: Fires | null = null;
+  private artilleryT = 12;
   /** Western: the train on its loop. */
   train: Train | null = null;
   doors!: Doors;
@@ -113,6 +120,7 @@ export class Game {
   private inkSky: InkSky | null = null;
   killcam!: Killcam;
   deathCam!: DeathCam;
+  private selfBody!: SelfBody;
   loadScreen = new LoadScreen();
   touch: Touch | null = null;
   vehicles: Vehicle[] = [];
@@ -250,6 +258,7 @@ export class Game {
     this.fx = new Particles(this.scene);
     this.loot = new LootManager(this.scene);
     this.loot.place = (from, to) => this.clearLootSpot(from, to);
+    this.loot.headroom = (p, max) => this.world.raycast(tmpEnd.set(p.x, p.y + 0.2, p.z), UP, max) + 0.2;
     this.loot.onOpen = (c) => {
       const at = c.pos.clone().setY(c.pos.y + (c.supply ? 1.2 : 0.6));
       if (at.distanceToSquared(this.camera.position) < 60 * 60) this.fx.burst(at, 0xffd24a, 22, { speed: 3.5, size: 0.06, life: 0.8, gravity: 3, up: 1.4, alpha: 0.9 });
@@ -266,6 +275,8 @@ export class Game {
       this.stockTrain();
     }
     if (THEME === 'western') this.tumbleweeds = new Tumbleweeds(this.scene, (x, z) => this.map.groundAt(x, z), this.world, (x, z) => this.map.isWater(x, z));
+    this.ambient = new Ambient(this.scene, (x, z) => this.map.groundAt(x, z), (x, z) => this.map.isWater(x, z));
+    if (this.map.fires.length) this.fires = new Fires(this.scene, this.map.fires);
     for (const v of vaults) this.features.solidCrate(v);
     progress(n++ / stages, 'Hanging doors and windows');
     await tick();
@@ -289,6 +300,7 @@ export class Game {
     this.env = new Environment(this.scene, this.camera, this.sun, this.hemi, this.fog, this.sfx);
     this.killcam = new Killcam(this);
     this.deathCam = new DeathCam(this);
+    this.selfBody = new SelfBody(this.scene);
     this.hud = new Hud(this);
     this.lobby = new Lobby(this);
     // Cars and doors went in after the loot: move anything they landed on.
@@ -380,20 +392,28 @@ export class Game {
     this.prompts.refresh();
     if (this.touch) this.touch.sens = s.sensitivity;
     const q = s.quality;
-    this.basePixelRatio = Math.min(devicePixelRatio, q === 'low' ? 0.85 : q === 'medium' ? 1.15 : 1.5);
+    // Epic renders above screen resolution on ordinary monitors (super-sampling: crisp edges, no shimmer).
+    this.basePixelRatio = q === 'epic' ? Math.min(Math.max(devicePixelRatio, 1.5), 2) : Math.min(devicePixelRatio, q === 'low' ? 0.85 : q === 'medium' ? 1.15 : 1.5);
     this.applyPixelRatio();
     this.sun.castShadow = q !== 'low';
-    const size = q === 'high' ? 2048 : 1024;
+    const size = q === 'epic' ? 4096 : q === 'high' ? 2048 : 1024;
+    const ext = q === 'epic' ? 110 : 70, sc = this.sun.shadow.camera;
+    if (sc.right !== ext) {
+      sc.left = sc.bottom = -ext;
+      sc.right = sc.top = ext;
+      sc.updateProjectionMatrix();
+    }
+    this.renderer.shadowMap.type = q === 'epic' ? PCFSoftShadowMap : PCFShadowMap;
     if (this.sun.shadow.mapSize.x !== size) {
       this.sun.shadow.mapSize.set(size, size);
       this.sun.shadow.map?.dispose();
       this.sun.shadow.map = null;
     }
     // Shadows only need refreshing every few frames on lower settings.
-    this.shadowEvery = q === 'high' ? 1 : q === 'medium' ? 2 : 3;
+    this.shadowEvery = q === 'high' || q === 'epic' ? 1 : q === 'medium' ? 2 : 3;
     this.renderer.shadowMap.autoUpdate = this.shadowEvery === 1;
-    this.viewDist = q === 'low' ? 0.7 : q === 'medium' ? 0.85 : 1;
-    this.detailMul = q === 'low' ? 0.6 : q === 'medium' ? 0.8 : 1;
+    this.viewDist = q === 'low' ? 0.7 : q === 'medium' ? 0.85 : q === 'epic' ? 1.3 : 1;
+    this.detailMul = q === 'low' ? 0.6 : q === 'medium' ? 0.8 : q === 'epic' ? 1.6 : 1;
     this.map.setDetail(q !== 'low');
     if (INK) s.postFx = true;
     if (s.postFx && !this.postFx) {
@@ -451,8 +471,9 @@ export class Game {
   /** Night dims the sea (it's lit by the same sky light as the land) and softens the storm wall. */
   private applyLook() {
     this.zone.setDark(this.env.isNight);
+    this.map.setNight(this.env.isNight);
     this.postFx?.setLook(this.env.tod, this.env.wx);
-    (this.map.sea.material as MeshLambertMaterial).color.setHex(TOY ? (this.env.isNight ? 0x4a5a80 : 0xffffff) : this.env.isNight ? 0x163a5c : 0x2f8fcf);
+    (this.map.sea.material as MeshLambertMaterial).color.setHex(TOY ? (this.env.isNight ? 0x163a6a : 0x2aa6ee) : this.env.isNight ? 0x163a5c : 0x2f8fcf);
   }
 
   private gliderKey = '';
@@ -473,9 +494,110 @@ export class Game {
     }
   }
 
+  /** Rendered shots of the island's towns for the loading card (taken in the menus, once per island). */
+  private shots: { map: GameMap; list: { url: string; name: string; u: number; v: number }[]; order: POI[]; at: number } | null = null;
+
+  /**
+   * One wide shot of a town, drawn straight to the screen canvas and grabbed as a JPEG. The normal
+   * frame is drawn over it right after, before the browser shows anything, so it never flashes.
+   */
+  private captureShot() {
+    if (this.arena || !this.map.pois.length) return;
+    if (this.shots?.map !== this.map) {
+      // Ten views: the cities and towns first (the big ones twice, from different sides), then the rest.
+      const rank = (p: POI) => (p.size === 'city' ? 0 : p.size === 'town' ? 1 : 2);
+      const pois = [...this.map.pois].sort(() => Math.random() - 0.5).sort((a, b) => rank(a) - rank(b));
+      const order = [...pois.filter((p) => rank(p) === 0), ...pois];
+      this.shots = { map: this.map, list: [], order: order.slice(0, 10), at: 0 };
+    }
+    const s = this.shots, p = s.order[s.list.length];
+    if (!p) return;
+    if (this.renderer.domElement.width < 64) return; // hidden window: nothing worth keeping
+    // Drawn big (1.75x of 1920x1080), then scaled down onto a 2D canvas: smooth edges, crisp detail.
+    const W = 1920, H = 1080, SS = 1.75, prevPR = this.renderer.getPixelRatio(), prevSize = this.renderer.getSize(new Vector2());
+    const cam = new PerspectiveCamera(50, W / H, 0.5, 4000);
+    const [sx, sy, sz] = this.env.sunOffset;
+    // Stand on the sunny side (the light behind the camera) and look in over the town, from a spot
+    // that isn't inside anything and can actually see the middle.
+    const sunA = Math.atan2(sz, sx), d = Math.max(50, p.radius * 0.95 + 25);
+    const seen = s.list.filter((l) => l.name === p.name).length;
+    let best: Vector3 | null = null, bestScore = -Infinity;
+    const eye = new Vector3(), mid = new Vector3(p.x, p.y + 4, p.z), dir = new Vector3();
+    for (let k = 0; k < 14; k++) {
+      const a = sunA + (seen ? Math.PI * 0.55 : 0) + (Math.random() - 0.5) * 1.8;
+      const cx = p.x + Math.cos(a) * d, cz = p.z + Math.sin(a) * d;
+      eye.set(cx, Math.max(p.y, this.map.groundAt(cx, cz), 0.5) + 9 + p.radius * 0.16 + Math.random() * 6, cz);
+      if (this.world.anyOverlap(eye.x - 1, eye.y - 1, eye.z - 1, eye.x + 1, eye.y + 1, eye.z + 1)) continue;
+      const len = dir.subVectors(mid, eye).length();
+      const clear = Math.min(1, this.world.raycast(eye, dir.normalize(), len) / len);
+      // Nothing big right in front of the lens (a wall filling half the picture).
+      let near = 0;
+      for (const yo of [-0.35, -0.12, 0.12, 0.35]) {
+        const c = Math.cos(yo), sn = Math.sin(yo), rd = tmpEnd.set(dir.x * c - dir.z * sn, dir.y - 0.08, dir.x * sn + dir.z * c).normalize();
+        near += Math.max(0, 1 - this.world.raycast(eye, rd, 35) / 35);
+      }
+      const score = clear * 2 - near * 1.2 + Math.cos(a - sunA) * 0.6 + (this.map.isWater(cx, cz) ? -0.3 : 0);
+      if (score > bestScore) {
+        bestScore = score;
+        best = eye.clone();
+      }
+    }
+    if (!best) {
+      s.order.splice(s.list.length, 1);
+      return;
+    }
+    cam.position.copy(best);
+    // Aim a little past the middle and off to one side, so the town fills the frame at an angle.
+    const side = Math.random() < 0.5 ? -1 : 1, fx = p.x - best.x, fz = p.z - best.z, fl = Math.hypot(fx, fz) || 1;
+    cam.lookAt(p.x - (fz / fl) * side * p.radius * 0.15, p.y + 1, p.z + (fx / fl) * side * p.radius * 0.15);
+    cam.updateMatrixWorld();
+    const sunPos = this.sun.position.clone(), sunAt = this.sun.target.position.clone();
+    const lobbyVis = this.lobby?.group.visible ?? false, zoneShown = this.zone.shown, fogFar = this.fog.far, fogNear = this.fog.near;
+    this.sun.target.position.set(p.x, p.y, p.z);
+    this.sun.position.set(p.x + sx, p.y + sy, p.z + sz);
+    this.sun.target.updateMatrixWorld();
+    this.renderer.shadowMap.needsUpdate = true;
+    if (this.lobby) this.lobby.group.visible = false;
+    this.zone.shown = false;
+    this.fog.far = 1400;
+    this.fog.near = 500;
+    this.map.cull(cam.position, 1400, 3, true);
+    try {
+      this.renderer.setRenderTarget(null);
+      this.renderer.setPixelRatio(1);
+      this.renderer.setSize(Math.round(W * SS), Math.round(H * SS), false);
+      this.renderer.render(this.scene, cam);
+      // Scale down with a light grade (the game's own look: a touch more saturation and contrast).
+      const out = document.createElement('canvas');
+      out.width = W;
+      out.height = H;
+      const ctx = out.getContext('2d')!;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.filter = 'saturate(1.14) contrast(1.07)';
+      ctx.drawImage(this.renderer.domElement, 0, 0, W, H);
+      const url = out.toDataURL('image/jpeg', 0.9);
+      if (url.length < 2000) throw new Error('blank');
+      s.list.push({ url, name: p.name, u: p.x / this.map.size + 0.5, v: p.z / this.map.size + 0.5 });
+    } catch {
+      s.order.splice(s.list.length, 1);
+    }
+    this.renderer.setPixelRatio(prevPR);
+    this.renderer.setSize(prevSize.x, prevSize.y, false);
+    this.sun.position.copy(sunPos);
+    this.sun.target.position.copy(sunAt);
+    this.sun.target.updateMatrixWorld();
+    this.renderer.shadowMap.needsUpdate = true;
+    if (this.lobby) this.lobby.group.visible = lobbyVis;
+    this.zone.shown = zoneShown;
+    this.fog.far = fogFar;
+    this.fog.near = fogNear;
+  }
+
   /** The loading card's text for a match. */
   private loadInfo(mode: string, sub: string): LoadInfo {
-    return { mode, sub, map: this.map.mapCanvas };
+    for (let i = 0; i < 4 && !this.arena && (this.shots?.map !== this.map || this.shots.list.length < Math.min(3, this.shots.order.length)); i++) this.captureShot();
+    const shots = this.shots?.map === this.map ? [...this.shots.list].sort(() => Math.random() - 0.5) : [];
+    return { mode, sub, map: this.map.mapCanvas, shots };
   }
 
   /** Shows the loading screen, grabbing the mouse while we still have the click, then runs `work`. */
@@ -490,7 +612,7 @@ export class Game {
         this.renderer.compile(this.scene, this.camera);
         this.prerenderIsland();
       } catch { /* not essential */ }
-    }, { now, minMs: now ? 1300 : 1900 });
+    }, { now, minMs: now ? 1300 : 3300 });
   }
 
   /**
@@ -790,7 +912,7 @@ export class Game {
       const m = this.input.consumeMouse();
       const s = this.settings.data;
       const w = this.player.weapon;
-      const scoped = w && (w.def.id === 'sniper' || w.att.scope);
+      const scoped = w && (w.def.id === 'sniper' || w.def.id === 'dmr' || w.att.scope);
       const adsMul = lerp(1, s.adsSensitivity * (scoped ? 0.6 : 1), this.weapons.adsAmount);
       if (this.weapons.wheel.open) {
         this.weapons.wheelLook(m.x, m.y);
@@ -830,11 +952,24 @@ export class Game {
     }
     if (this.state === 'killcam') this.killcam.update(dt, this.camera);
     else this.syncCamera(dt);
+    {
+      const p = this.player;
+      const fp = this.state === 'playing' && !this.lobby?.active && p.alive && !this.driving && !this.deathCam.active
+        && (p.mode === 'ground' || p.mode === 'zipline' || p.mode === 'glide') && !p.swimming;
+      this.selfBody.update(dt, p, this.profile.data.skin, fp);
+    }
     this.cheats.draw();
     this.fx.update(dt);
     this.env.update(dt, cam);
     if (this.env.flashlightOn) this.env.flashlightRange(this.world.raycast(cam, this.camera.getWorldDirection(tmpN), 16));
     this.features.update(dt, cam);
+    this.ambient.day = !this.env.isNight;
+    this.ambient.war = false;
+    this.ambient.update(dt, cam, !this.arena);
+    if (this.fires) {
+      this.fires.visible = !this.arena;
+      if (!this.arena) this.fires.update(dt, this.camera, this.renderer.getDrawingBufferSize(fireBuf).y, this.env.isNight);
+    }
     if (this.tumbleweeds) {
       this.tumbleweeds.visible = this.state !== 'title' && !this.arena;
       this.tumbleweeds.update(dt, cam);
@@ -868,6 +1003,12 @@ export class Game {
       }
       this.inkSky ??= new InkSky(this.scene);
       this.inkSky.update(this.camera, this.scene.background, this.fog.color, tmpInkSun.copy(this.sun.position).sub(this.sun.target.position).normalize(), this.sun.color);
+    }
+    // In the menus, now and then take a shot of a town for the next loading screen.
+    if (this.lobby?.active && !this.loadScreen.busy && !this.arena && this.frameNo > 90 && (this.shots?.map !== this.map || (this.shots.list.length < this.shots.order.length && performance.now() - this.shots.at > 1500))) {
+      this.captureShot();
+      if (this.shots) this.shots.at = performance.now();
+      this.map.cull(cam, this.fog.far, this.detailMul, false);
     }
     if (this.postFx && this.settings.data.postFx) {
       this.postFx.hurt = this.player.alive ? clamp((35 - this.player.health) / 35, 0, 1) * 0.8 : 0;
@@ -939,8 +1080,12 @@ export class Game {
       if (res.killed && p.alive) this.onKill(null, p, null, 'Fall damage');
     }
     for (const c of p.cues.splice(0)) {
-      if (c === 'mantle') this.sfx.mantle();
-      else if (c === 'zip') this.sfx.zipAttach();
+      if (c === 'mantle') {
+        this.sfx.mantle();
+        // Vaulting through a window takes the glass with you.
+        const m = p.mantle;
+        if (m) this.glass.smash(Math.min(m.from.x, m.to.x) - 0.3, m.mid.y, Math.min(m.from.z, m.to.z) - 0.3, Math.max(m.from.x, m.to.x) + 0.3, m.mid.y + 1.2, Math.max(m.from.z, m.to.z) + 0.3);
+      } else if (c === 'zip') this.sfx.zipAttach();
       else if (c === 'splash') this.sfx.splash(true);
       else this.sfx.swimStroke();
     }
@@ -1164,7 +1309,7 @@ export class Game {
     p.medkits = 4;
     p.slots = [makeWeapon('ar', RARITIES[2]), makeWeapon('shotgun', RARITIES[1])];
     for (const k of Object.keys(p.ammo) as (keyof typeof p.ammo)[]) p.ammo[k] = AMMO_INFO[k].max;
-    p.throwables = { frag: 3, smoke: 3, flash: 3, grapple: 3 };
+    p.throwables = { frag: 3, smoke: 3, flash: 3, grapple: 0 };
     // A weapon rack of everything, in every rarity.
     const rack: LootKind[] = WEAPON_IDS.map((id) => ({ type: 'weapon', weapon: makeWeapon(id, RARITIES[Math.min(3, 1 + (WEAPON_IDS.indexOf(id) % 3))]) }));
     rack.forEach((k, i) => this.loot.spawn(k, new Vector3(at.x - 9 + i * 2, this.map.groundAt(at.x - 9 + i * 2, at.z + 4) + 0.1, at.z + 4)));
@@ -1679,9 +1824,24 @@ export class Game {
     return dist < 6 || !this.features.bushBlocks(eye, d, dist);
   }
 
+  private heardAt = new Map<Combatant, number>();
+
+  /** Gunfire carries: bots nearby that aren't busy come to look (checked twice a second per shooter). */
+  private hearShot(shooter: Combatant) {
+    if (this.arena || !this.humanTeam(shooter.team)) return;
+    const last = this.heardAt.get(shooter) ?? -9;
+    if (this.matchTime - last < 0.5) return;
+    this.heardAt.set(shooter, this.matchTime);
+    for (const c of this.grid.query(shooter.body.pos.x, shooter.body.pos.z, 75, [])) {
+      if (!(c instanceof Bot) || !c.alive || c.team === shooter.team || c.boss || c.dummy || !this.onFoot(c)) continue;
+      if (Math.random() < 0.55) c.heard(shooter);
+    }
+  }
+
   fireShot(shooter: Combatant, origin: Vector3, dir: Vector3, w: WeaponInstance, muzzle: Vector3) {
     const def = w.def;
     if (this.gulagPrep > 0 && this.inArena(shooter)) return;
+    this.hearShot(shooter);
     this.arena?.dropShield(shooter);
     if (shooter.isPlayer) this.music.duck(0.55);
     let t = this.world.raycast(origin, dir, def.range);
@@ -1872,7 +2032,7 @@ export class Game {
       }
       if (this.owns(victim)) this.dropLoot(victim, killer?.isPlayer ? w : null);
       if (victim.boss) {
-        this.hud.announce(`${victim.name.toUpperCase()} DEFEATED`, 3);
+        this.hud.killBanner(victim.name, 5, head, 'BOSS DEFEATED');
         this.hud.pickupToast(`Mythic ${victim.weapon.def.name} dropped!`, '#ff5ad8');
         if (killer?.isPlayer) {
           this.sfx.kill();
@@ -1889,10 +2049,8 @@ export class Game {
         this.recentKills = this.recentKills.filter((t) => this.matchTime - t < 7);
         this.recentKills.push(this.matchTime);
         const n = this.recentKills.length;
-        if (n >= 2) {
-          this.hud.announce(STREAK_NAMES[Math.min(n, 5)], 2);
-          this.sfx.streak(n);
-        } else this.hud.announce(`ELIMINATED ${victim.name.toUpperCase()}`, 1.6);
+        this.hud.killBanner(victim.name, n, head, n >= 2 ? STREAK_NAMES[Math.min(n, 5)] : 'ELIMINATED');
+        this.sfx.killChime(n);
       } else if (victim.team === this.player.team) this.hud.pickupToast(`${victim.name} is down`, '#ff6b6b');
     }
 
@@ -1942,10 +2100,8 @@ export class Game {
       this.recentKills = this.recentKills.filter((t) => this.matchTime - t < 7);
       this.recentKills.push(this.matchTime);
       const n = this.recentKills.length;
-      if (n >= 2) {
-        this.hud.announce(STREAK_NAMES[Math.min(n, 5)], 2);
-        this.sfx.streak(n);
-      } else this.hud.announce(`ELIMINATED ${victim.name.toUpperCase()}`, 1.6);
+      this.hud.killBanner(victim.name, n, head, n >= 2 ? STREAK_NAMES[Math.min(n, 5)] : 'ELIMINATED');
+      this.sfx.killChime(n);
     }
     if (victim === p) {
       p.killHeal = 0;
@@ -2016,7 +2172,7 @@ export class Game {
       const s = this.clearLootSpot(p, p);
       it.alive = true;
       p.copy(s);
-      it.beam?.position.copy(s);
+      if (it.beam) this.loot.seatBeam(it.beam, s, it.beam.userData.full);
     }
   }
 
@@ -2199,6 +2355,7 @@ export class Game {
 
   /** Picks the soundtrack for what's happening: lobby, the drop, a calm groove, then the final circles. */
   private updateMusic(dt: number) {
+    this.updateAliveCue();
     const a = this.sfx.audio;
     if (!a) return;
     this.music.attach(a);
@@ -2222,6 +2379,25 @@ export class Game {
   }
 
   private landedFor = 0;
+  /** Lowest "players left" cue played this match. */
+  private aliveCue = 99;
+
+  /** 10, 5, 3 and 2 players left: a sting and a banner, so the endgame feels like it's closing in. */
+  private updateAliveCue() {
+    if (this.arena || this.practiceMode || this.state !== 'playing') return;
+    const n = this.aliveCount;
+    if (n < 2) return;
+    if (n > this.aliveCue + 2) this.aliveCue = 99; // a new match
+    // The closest mark at or above the count (several dying at once plays one cue, not a burst).
+    for (const t of [2, 3, 5, 10]) {
+      if (n <= t && t < this.aliveCue) {
+        this.aliveCue = t;
+        this.sfx.playersLeft(n);
+        this.hud.announce(n <= 2 ? 'FINAL 2' : `${n} PLAYERS LEFT`, 2.5);
+        break;
+      }
+    }
+  }
 
   /**
    * Chests belong indoors or in named places, fully clear of walls and furniture and sitting on a
@@ -2253,6 +2429,15 @@ export class Game {
     if (this.indoorT <= 0) {
       this.indoorT = 0.3;
       s.indoor = p.mode === 'ground' && !this.driving && this.underRoof(p.body.pos);
+    }
+    // The war goes on somewhere else: artillery thumping away beyond the hills now and then.
+    if (TOY && !this.arena && this.state === 'playing') {
+      this.artilleryT -= dt;
+      if (this.artilleryT <= 0) {
+        this.artilleryT = 35 + Math.random() * 45;
+        const n = Math.random() < 0.35 ? 3 : 1;
+        for (let i = 0; i < n; i++) s.distantBoom((Math.random() - 0.5) * 1.6, i * (0.5 + Math.random() * 0.6));
+      }
     }
     // Storm rumble grows as you approach the wall.
     if (p.mode !== 'plane' && !this.practiceMode && !this.gulagFight && !this.arena) {
@@ -2458,3 +2643,4 @@ const tmpDir = new Vector3(), tmpEnd = new Vector3(), tmpEye = new Vector3(), tm
 const UP = new Vector3(0, 1, 0), DOWN = new Vector3(0, -1, 0);
 const CHEST_NUDGES = [[0, 0], [0.8, 0], [-0.8, 0], [0, 0.8], [0, -0.8], [1.5, 0], [-1.5, 0], [0, 1.5], [0, -1.5]];
 const tmpInkSun = new Vector3();
+const fireBuf = new Vector2();

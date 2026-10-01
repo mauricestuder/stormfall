@@ -247,7 +247,7 @@ export class Lobby {
     this.hero.root.rotation.order = 'YXZ';
     this.hero.root.position.y = HERO_Y;
     this.group.add(this.hero.root);
-    [this.armR, this.armL] = Character.holdDirs;
+    [this.armR, this.armL] = this.hero.hold;
   }
 
   /** Your party (online room) on the side podiums, in their own outfits. */
@@ -279,10 +279,9 @@ export class Lobby {
         } else el.innerHTML = '<b>+</b><span>INVITE<br>FRIENDS</span>';
       });
     }
-    const [hr, hl] = Character.holdDirs;
     this.mates.forEach((c, i) => {
       if (!c) return;
-      c.pose(hr, hl);
+      c.pose(...(c.hold as [Vector3, Vector3]));
       c.animate(dt, 0, true, false);
       c.root.rotation.set(0, Math.PI + (i ? -0.35 : 0.35) + Math.sin(this.t * 0.5 + i * 2) * 0.08, 0);
     });
@@ -339,7 +338,7 @@ export class Lobby {
       if (this.emoteT > EMOTE_TIME[this.emote % EMOTES.length]) this.emote = -1;
       else pose = emotePose(this.emote, this.emoteT);
     }
-    const [hr, hl] = Character.holdDirs;
+    const [hr, hl] = hero.hold;
     if (this.showGlider) pose = { r: new Vector3(0.25, 1, -0.1), l: new Vector3(-0.25, 1, -0.1), gun: false };
     const k = 1 - Math.exp(-14 * dt);
     this.armR.lerp(pose.r ? pose.r.normalize() : hr, k).normalize();

@@ -14,7 +14,7 @@ export type MoveMode = 'plane' | 'freefall' | 'glide' | 'ground' | 'vehicle' | '
 export const WATER_Y = -0.5;
 const ZIP_SPEED = 17;
 /** How fast the grappling hook reels you in (m/s). */
-const GRAPPLE_SPEED = 30;
+const GRAPPLE_SPEED = 34;
 
 const P = CONFIG.player;
 const D = CONFIG.drop;
@@ -39,11 +39,12 @@ export class Player implements Combatant {
   slots: (WeaponInstance | null)[] = [makeWeapon('pistol'), null];
   active = 0;
   /** You spawn with the grappling hook (3 charges). */
-  throwables: Record<ThrowKind, number> = { frag: 0, smoke: 0, flash: 0, grapple: 3 };
+  throwables: Record<ThrowKind, number> = { frag: 0, smoke: 0, flash: 0, grapple: 0 };
   /** Hooked on something with the grappling hook: where, and how long we've been reeled in. */
-  grapple: { at: Vector3; t: number } | null = null;
+  /** Web line: anchored at `at`, `len` = rope length (shortens as it reels in). */
+  grapple: { at: Vector3; t: number; len: number } | null = null;
   /** Found a grappling hook: its charges (throwables.grapple, max 3) come back one every HOOK_RECHARGE s. */
-  hookOwned = true;
+  hookOwned = false;
   hookCharge = 0;
   throwSel: ThrowKind = 'frag';
   swimming = false;
@@ -59,6 +60,8 @@ export class Player implements Combatant {
   drop = 0;
   /** Knocked flying (hit by a car): no fall damage on this landing. */
   flung = false;
+  /** Just let go of a web line: a moment before X can shoot the next one. */
+  webCd = 0;
   private strokeT = 0;
   /** The E press that grabbed the cable must not also let go of it. */
   private zipGrace = 0;
@@ -159,11 +162,20 @@ export class Player implements Combatant {
     moveBody(world, this.body, dt, 0);
     const alt = (this.altitude = this.body.pos.y - world.groundAt(this.body.pos.x, this.body.pos.z));
     this.freefallTime += dt;
-    if (alt < D.deployAltitude || (input.pressed('Space') && this.freefallTime > 0.3)) this.mode = 'glide';
+    if (alt < D.deployAltitude || (input.pressed('Space') && this.freefallTime > 0.3)) this.openGlider();
     if (this.body.onGround) this.land();
   }
 
   private glideTime = 0;
+  /** Opening the glider stops any reload or heal in progress (the game reads and clears this). */
+  gliderOpened = false;
+  /** Been more than 30 m up during this fall (sky drop, cliff, tower): the glider snaps open at 30 m. */
+  private dropped = false;
+
+  private openGlider() {
+    this.mode = 'glide';
+    this.gliderOpened = true;
+  }
 
   /** Falling from high up (cliffs, towers, ziplines, launch pads): Space opens the glider. */
   get canRedeploy() {
@@ -172,10 +184,12 @@ export class Player implements Combatant {
   }
 
   private updateGlide(dt: number, input: Input, world: CollisionWorld) {
-    // Space folds the glider up again to drop faster; open it again before you land.
-    if (input.pressed('Space') && this.glideTime > 0.25) {
+    // Space folds the glider up again to drop faster (not below 30 m); open it again before you land.
+    // Only high up: under 30 m the glider stays open until you land.
+    if (input.pressed('Space') && this.glideTime > 0.25 && this.altitude > 30) {
       this.mode = 'ground';
       this.glideTime = 0;
+      this.dropped = true;
       return;
     }
     this.glideTime += dt;
@@ -190,8 +204,10 @@ export class Player implements Combatant {
   }
 
   startGrapple(at: Vector3) {
+    if (this.mode === 'glide') this.mode = 'ground';
     if (this.mode !== 'ground') return;
-    this.grapple = { at: at.clone(), t: 0 };
+    const b = this.body;
+    this.grapple = { at: at.clone(), t: 0, len: Math.hypot(at.x - b.pos.x, at.y - b.pos.y - 1, at.z - b.pos.z) };
     this.sliding = this.crouching = false;
     this.body.onGround = false;
     this.body.pos.y += 0.05;
@@ -273,6 +289,8 @@ export class Player implements Combatant {
     const b = this.body, v = b.vel;
     // Mantling takes over movement until the climb is done.
     if (this.mantle) {
+      // Diving through a window: duck so the view stays under the top of the opening.
+      if (this.mantle.eye !== undefined) this.eyeHeight = damp(this.eyeHeight, this.mantle.eye, 30, dt);
       if (stepMantle(this.mantle, dt, b.pos)) {
         this.mantle = null;
         b.vel.set(0, 0, 0);
@@ -280,27 +298,47 @@ export class Player implements Combatant {
       }
       return;
     }
-    // Grappling hook: reeled in toward the hook until we arrive, bump into something or let go (Space).
+    // Web line: swing on it like a pendulum. A quick tug toward the anchor gets you going, the
+    // line slowly reels in, and letting go (Space or X) keeps all your momentum.
     if (this.grapple) {
       const g = this.grapple;
       g.t += dt;
       const to = tmp.set(g.at.x - b.pos.x, g.at.y - (b.pos.y + 1.0), g.at.z - b.pos.z);
       const d = to.length();
-      if (d < 2.2 || g.t > 2.4 || (g.t > 0.15 && input.pressed('Space')) || (g.t > 0.3 && v.length() < 3)) {
+      const letGo = g.t > 0.15 && (input.pressed('Space') || !input.isDown('KeyX'));
+      if (d < 2.4 || g.t > 7 || letGo || (g.t > 0.5 && b.onGround && Math.hypot(v.x, v.z) < 2.5)) {
         this.grapple = null;
-        v.y = Math.max(v.y, 5.5); // pop up at the end so you can land on (or mantle onto) what you hooked
+        this.webCd = 0.2;
+        if (letGo || d < 2.4) v.y = Math.max(v.y + 3, 5); // a little hop off the end of the swing
         this.flung = true;
       } else {
         to.divideScalar(d);
-        const sag = -3.2 * Math.sin(Math.min(1, g.t / 0.9) * Math.PI);
-        v.x = damp(v.x, to.x * GRAPPLE_SPEED, 6, dt);
-        v.y = damp(v.y, to.y * GRAPPLE_SPEED + 1.5 + sag, 6, dt);
-        v.z = damp(v.z, to.z * GRAPPLE_SPEED, 6, dt);
+        // The tug: strong for the first moment, so a line shot straight ahead still pulls you in.
+        if (g.t < 0.45) v.addScaledVector(to, GRAPPLE_SPEED * 2.2 * dt);
+        v.y -= P.gravity * dt;
         const steer = this.wishDir(input, tmp2);
-        v.x += steer.x * 55 * dt;
-        v.z += steer.z * 55 * dt;
+        v.x += steer.x * 16 * dt;
+        v.z += steer.z * 16 * dt;
+        // Swing faster if you hold forward, a bit of air drag so it can't run away.
+        v.multiplyScalar(1 - 0.12 * dt);
+        g.len = Math.max(3, Math.min(g.len, d) - 5 * dt);
         b.height = P.standHeight;
+        b.onGround = false;
         moveBody(world, b, dt, P.stepHeight);
+        // The rope: can't get further away than its length; the outward part of the velocity goes.
+        const r = tmp.set(b.pos.x - g.at.x, b.pos.y + 1.0 - g.at.y, b.pos.z - g.at.z), rd = r.length();
+        if (rd > g.len) {
+          r.divideScalar(rd);
+          const tx = g.at.x + r.x * g.len - b.pos.x, ty = g.at.y + r.y * g.len - 1.0 - b.pos.y, tz = g.at.z + r.z * g.len - b.pos.z;
+          const bx = b.pos.x, by = b.pos.y, bz = b.pos.z;
+          b.pos.x += tx;
+          b.pos.y += ty;
+          b.pos.z += tz;
+          // Don't let the rope pull us into a wall.
+          if (world.anyOverlap(b.pos.x - b.radius, b.pos.y + 0.1, b.pos.z - b.radius, b.pos.x + b.radius, b.pos.y + b.height, b.pos.z + b.radius)) b.pos.set(bx, by, bz);
+          const out = v.x * r.x + v.y * r.y + v.z * r.z;
+          if (out > 0) v.addScaledVector(r, -out);
+        }
         this.airTime += dt;
         this.altitude = b.pos.y - world.groundAt(b.pos.x, b.pos.z);
         this.eyeHeight = damp(this.eyeHeight, P.eyeStand, 14, dt);
@@ -486,7 +524,7 @@ export class Player implements Combatant {
 
     this.altitude = b.pos.y - world.groundAt(b.pos.x, b.pos.z);
     if (b.onGround) {
-      this.launched = this.flung = false;
+      this.launched = this.flung = this.dropped = false;
       this.airTime = 0;
       this.drop = 0;
     } else {
@@ -494,11 +532,14 @@ export class Player implements Combatant {
       // How far down is the first thing below us (a floor inside a building counts)?
       const r = world.raycast(tmp2.set(b.pos.x, b.pos.y + 0.1, b.pos.z), DOWN, Math.max(0.2, this.altitude + 0.2));
       this.drop = Math.min(this.altitude, r - 0.1);
+      if (this.drop > 30) this.dropped = true;
     }
     if (!b.onGround && this.launched && (v.y < 0 || input.pressed('Space')) && this.drop > 5) {
       this.launched = false;
-      this.mode = 'glide';
-    } else if (!spaceUsed && this.canRedeploy && input.pressed('Space')) this.mode = 'glide';
+      this.openGlider();
+    } else if (!spaceUsed && this.canRedeploy && input.pressed('Space')) this.openGlider();
+    // Falling within 30 m of the ground with the glider closed: it opens by itself.
+    else if (this.dropped && !b.onGround && v.y < -8 && this.drop > 3 && this.drop <= 30 && !this.grapple && !this.swimming && !this.mantle) this.openGlider();
 
     const eyeTarget = this.sliding ? P.eyeSlide : this.crouching ? P.eyeCrouch : P.eyeStand;
     this.eyeHeight = damp(this.eyeHeight, eyeTarget, 14, dt);

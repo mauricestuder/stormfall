@@ -20,6 +20,8 @@ export function mergeToGeometry(root: Object3D): BufferGeometry {
     const g = new BufferGeometry();
     g.setAttribute('position', src.getAttribute('position').clone());
     g.setAttribute('normal', src.getAttribute('normal').clone());
+    const own = src.getAttribute('color');
+    if (own) g.setAttribute('color', own.clone());
     if (src.index) g.setIndex(src.index.clone());
     const g2 = g.index ? g.toNonIndexed() : g;
     rel.multiplyMatrices(inv, m.matrixWorld);
@@ -28,7 +30,12 @@ export function mergeToGeometry(root: Object3D): BufferGeometry {
     c.copy(mat.color ?? c.set(0xffffff));
     if (mat.emissive) c.add(e.copy(mat.emissive));
     const n = g2.getAttribute('position').count, col = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) col.set([Math.min(1, c.r), Math.min(1, c.g), Math.min(1, c.b)], i * 3);
+    // Already painted per vertex (the kit's guns): keep those colours, tinted by the material.
+    const pre = own ? g2.getAttribute('color') : null;
+    for (let i = 0; i < n; i++) {
+      const r = pre ? pre.getX(i) : 1, gg = pre ? pre.getY(i) : 1, b = pre ? pre.getZ(i) : 1;
+      col.set([Math.min(1, c.r * r), Math.min(1, c.g * gg), Math.min(1, c.b * b)], i * 3);
+    }
     g2.setAttribute('color', new BufferAttribute(col, 3));
     parts.push(g2);
   });

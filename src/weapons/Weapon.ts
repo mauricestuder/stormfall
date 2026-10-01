@@ -1,6 +1,8 @@
-import { BoxGeometry, CylinderGeometry, Group, Mesh } from 'three';
+import { roundedBar } from '../core/roundBox';
+import { Color, CylinderGeometry, Group, Mesh, type Object3D } from 'three';
 import { plastic, type LitMat } from '../game/Look';
 import { TOY } from '../theme';
+import { toonGunGeometry, toonReady } from '../assets/toon';
 
 export type AmmoType = 'light' | 'heavy' | 'shells' | 'sniper' | 'rocket';
 
@@ -136,12 +138,12 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
   },
 };
 
-// Toy Box: every gun is a brightly coloured foam blaster.
+// Toy Box: the plastic army's own kit, named like the guns the little green men carry.
 if (TOY) {
   const toy: Record<WeaponId, [string, number]> = {
-    pistol: ['Dart Pistol', 0x2a7de1], revolver: ['Cap Gun', 0xe8392b], smg: ['Foam SMG', 0x2fb84a], burst: ['Triple-Dart Rifle', 0x8b3fe0],
-    ar: ['Foam Blaster AR', 0x2a7de1], lmg: ['Drum Blaster', 0xf5c518], shotgun: ['Splatter Shotgun', 0xff7a1a], dmr: ['Rubber-Band DMR', 0x14b8a6],
-    sniper: ['Suction-Cup Sniper', 0xe83e8c], rocket: ['Bottle Rocket', 0xf5c518],
+    pistol: ["Sarge's Sidearm", 0x2a7de1], revolver: ['Colonel Six-Shooter', 0xe8392b], smg: ['Tommy Gun', 0x2fb84a], burst: ['Trooper Burst Rifle', 0x8b3fe0],
+    ar: ['Infantry Rifle', 0x2a7de1], lmg: ['Foxhole Machine Gun', 0xf5c518], shotgun: ['Trench Shotgun', 0xff7a1a], dmr: ['Marksman Rifle', 0x14b8a6],
+    sniper: ['Recon Sniper', 0xe83e8c], rocket: ['Bazooka', 0xf5c518],
   };
   for (const id of Object.keys(toy) as WeaponId[]) [WEAPONS[id].name, WEAPONS[id].bodyColor] = toy[id];
 }
@@ -306,16 +308,18 @@ export function damageFalloff(def: WeaponDef, dist: number) {
 // ---- Throwables ----
 
 export type ThrowKind = 'frag' | 'smoke' | 'flash' | 'grapple';
+/** The web shooter is switched off for now (no spawns, X does nothing). Flip to bring it back. */
+export const WEB_ENABLED = false;
 export const THROWABLES: Record<ThrowKind, { name: string; color: number; max: number }> = {
   frag: { name: 'Frag Grenade', color: 0x4f6b3a, max: 3 },
   smoke: { name: 'Smoke Grenade', color: 0xb8bcc2, max: 3 },
   flash: { name: 'Flashbang', color: 0xe8e2c8, max: 3 },
-  grapple: { name: 'Grappling Hook', color: 0x2f8ad8, max: 3 },
+  grapple: { name: 'Web Shooter', color: 0x2f8ad8, max: 6 },
 };
 
 // ---- Procedural gun models, shared by loot and bots ----
 
-const unitBox = new BoxGeometry(1, 1, 1);
+const unitBox = roundedBar();
 const tube = new CylinderGeometry(1, 1, 1, 10).rotateX(Math.PI / 2);
 const matCache = new Map<string, LitMat>();
 
@@ -329,6 +333,30 @@ export function lambert(color: number, emissive = 0): LitMat {
   return m;
 }
 
+/** Toy guns: dark gunmetal plastic, so they don't melt into the green army men holding them. */
+const ARMY = TOY ? new Color(0x3a3e45) : null;
+const PINK = new Color(0xe83cb8);
+const armyCache = new Map<LitMat, LitMat>(), pinkCache = new Map<LitMat, LitMat>();
+/** Toy Box: recolour a gun model in gunmetal plastic, or hot pink for a boss's Mythic (parts that glow are left alone). */
+export function armyGreen(root: Object3D, mythic = false) {
+  if (!ARMY) return;
+  const base = mythic ? PINK : ARMY, cache = mythic ? pinkCache : armyCache;
+  root.traverse((o) => {
+    const m = o as Mesh;
+    if (!m.isMesh) return;
+    const mat = m.material as LitMat;
+    if (!('emissive' in mat) || mat.emissive.getHex() !== 0 || mat.transparent) return;
+    let g = cache.get(mat);
+    if (!g) {
+      // Keep a hint of the original shading: darker parts come out a darker green.
+      const lum = mat.color.r * 0.3 + mat.color.g * 0.55 + mat.color.b * 0.15;
+      g = plastic({ color: base.clone().offsetHSL(0, 0, (lum - 0.5) * 0.12) }, 0.4);
+      cache.set(mat, g);
+    }
+    m.material = g;
+  });
+}
+
 export function boxMesh(w: number, h: number, d: number, color: number, emissive = 0): Mesh {
   const m = new Mesh(unitBox, lambert(color, emissive));
   m.scale.set(w, h, d);
@@ -338,8 +366,20 @@ export function boxMesh(w: number, h: number, d: number, color: number, emissive
 /** Gun pointing down -Z, origin at the grip. Returns group with `muzzleZ` in userData. */
 const TP_DARK = TOY ? 0xf2f2f2 : 0x1d1f23, TP_DARKER = TOY ? 0xffc21a : 0x15171a, TP_BARREL = TOY ? 0xf2f2f2 : 0x22252a;
 
+const toonGunMat = plastic({ vertexColors: true }, 0.35);
+
 export function buildGunModel(w: WeaponInstance): Group {
+  if (TOY && toonReady()) {
+    // The kit's cartoon guns, each in its own colours.
+    const g = new Group(), L = w.def.modelLength * 1.15;
+    const m = new Mesh(toonGunGeometry(w.def.id, !!w.def.mythic, L), toonGunMat);
+    m.castShadow = true;
+    g.add(m);
+    g.userData.muzzleZ = -L * 0.8;
+    return g;
+  }
   const g = buildGunModelBase(w);
+  armyGreen(g, !!w.def.mythic);
   if (TOY && w.def.id !== 'rocket') {
     const L = w.def.modelLength, tip = boxMesh(0.05, 0.05, 0.05, 0xff6a00, 0x552200);
     tip.position.set(0, 0.055, -L * 0.8 - 0.05);

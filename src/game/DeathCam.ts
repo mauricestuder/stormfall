@@ -36,6 +36,7 @@ export class DeathCam {
     c.root.position.copy(ground);
     c.root.rotation.set(0, yaw, 0);
     g.scene.add(c.root);
+    c.die();
     this.body = c;
     this.active = true;
     this.t = 0;
@@ -76,11 +77,16 @@ export class DeathCam {
     this.t += dt;
     // The body topples (easing in like a real fall, with a small bounce), legs go limp.
     const kf = Math.min(1, this.t / 0.55), fall = kf * kf + (kf >= 1 ? Math.sin(Math.min(1, (this.t - 0.55) / 0.25) * Math.PI) * -0.06 : 0);
-    c.root.rotation.set(this.fallX * fall, this.yaw, this.fallZ * fall);
-    c.root.position.set(this.at.x, this.at.y + Math.min(1, fall) * 0.12, this.at.z);
-    const legs = c.legsList;
-    legs[0].rotation.x += (0.35 - legs[0].rotation.x) * Math.min(1, dt * 6);
-    legs[1].rotation.x += (-0.15 - legs[1].rotation.x) * Math.min(1, dt * 6);
+    if (c.animatedDeath) {
+      c.tick(dt);
+    } else {
+      c.tick(dt);
+      c.root.rotation.set(this.fallX * fall, this.yaw, this.fallZ * fall);
+      c.root.position.set(this.at.x, this.at.y + Math.min(1, fall) * 0.12, this.at.z);
+      const legs = c.legsList;
+      legs[0].rotation.x += (0.35 - legs[0].rotation.x) * Math.min(1, dt * 6);
+      legs[1].rotation.x += (-0.15 - legs[1].rotation.x) * Math.min(1, dt * 6);
+    }
     // Camera: out of the eyes, up and back, turning to look down at the body.
     const k = 1 - (1 - Math.min(1, this.t / RISE)) ** 3;
     cam.position.lerpVectors(this.eye, this.end, k);

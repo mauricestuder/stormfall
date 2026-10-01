@@ -64,7 +64,7 @@ const ROWS: Row[] = [
   { section: 'Video' },
   { key: 'fov', label: 'Field of view', type: 'range', min: 70, max: 90, step: 1, fmt: (v) => `${v}°` },
   { key: 'brightness', label: 'Brightness', type: 'range', min: 0.6, max: 2.2, step: 0.05, fmt: pct },
-  { key: 'quality', label: 'Graphics quality', type: 'select', options: [['low', 'Low'], ['medium', 'Medium'], ['high', 'High']] },
+  { key: 'quality', label: 'Graphics quality', type: 'select', options: [['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['epic', 'Epic (sharpest, needs a strong GPU)']] },
   { key: 'postFx', label: 'Bloom & colour grading', type: 'toggle' },
   { key: 'dynamicRes', label: 'Dynamic resolution', type: 'toggle' },
   { key: 'showFps', label: 'Show FPS', type: 'toggle' },

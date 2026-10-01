@@ -75,7 +75,7 @@ export class PostFx {
   constructor(renderer: WebGLRenderer, scene: Scene, camera: PerspectiveCamera) {
     this.composer = new EffectComposer(renderer);
     this.composer.addPass(INK ? new InkPass(scene, camera) : new RenderPass(scene, camera));
-    this.dof = new BokehPass(scene, camera, { focus: 6, aperture: 0.007, maxblur: 0.008 });
+    this.dof = new BokehPass(scene, camera, { focus: 6, aperture: 0.0025, maxblur: 0.0035 });
     this.dof.enabled = false;
     this.composer.addPass(this.dof);
     this.composer.addPass(new ShaderPass(ClampShader));

@@ -428,6 +428,14 @@ export class Sfx {
     this.tone(880, 0.12, 0.16, 'triangle', undefined, 0.02);
     this.tone(1320, 0.22, 0.16, 'triangle', undefined, 0.1, 0, 'master', 0.3);
   }
+  /** The kill banner's chime: a bright bell that climbs a step with every kill in a row. */
+  killChime(n: number) {
+    const k = Math.min(n, 5) - 1, base = 523 * Math.pow(1.1225, k * 2);
+    this.tone(base, 0.5, 0.14, 'sine', undefined, 0.04);
+    this.tone(base * 1.5, 0.45, 0.1, 'triangle', undefined, 0.09);
+    this.tone(base * 2, 0.6, 0.07, 'sine', undefined, 0.14);
+    this.burst({ dur: 0.35, freq: 6000, type: 'highpass', q: 0.7, gain: 0.05, delay: 0.04 });
+  }
   streak(n: number) {
     for (let i = 0; i < Math.min(n, 5); i++) this.tone(660 * Math.pow(1.26, i), 0.12, 0.16, 'triangle', undefined, 0.1 + i * 0.07);
   }
@@ -632,6 +640,13 @@ export class Sfx {
     this.burst({ dur: 2.6, freq: 320, sweepTo: 90, type: 'bandpass', q: 0.5, gain: 0.35 * att, pan, delay: delay + 0.15, attack: 0.2, verb: 0.6 });
     if (near) for (let i = 0; i < 6; i++) this.burst({ dur: 0.04, freq: 1800 + Math.random() * 2500, type: 'bandpass', q: 3, gain: 0.08 * att, pan: pan + (Math.random() - 0.5) * 0.6, delay: delay + 0.5 + Math.random() * 0.9 });
   }
+  /** Artillery far off: a low thud and a long rumble rolling back off the hills. */
+  distantBoom(pan: number, delay = 0) {
+    const g = 0.5 + Math.random() * 0.4;
+    this.tone(48 + Math.random() * 14, 1.4, 0.35 * g, 'sine', 24, delay, pan, 'ambient');
+    this.burst({ dur: 2.8, freq: 170, sweepTo: 60, gain: 0.32 * g, pan, delay, bus: 'ambient', attack: 0.05, verb: 0.8 });
+    this.burst({ dur: 3.2, freq: 110, sweepTo: 50, type: 'bandpass', q: 0.6, gain: 0.18 * g, pan: -pan * 0.5, delay: delay + 0.35, attack: 0.4, bus: 'ambient', verb: 0.9 });
+  }
   crash(intensity: number) {
     this.burst({ dur: 0.3, freq: 600, gain: Math.min(0.8, 0.2 + intensity * 0.04) });
     this.burst({ dur: 0.2, freq: 3000, type: 'bandpass', q: 2, gain: Math.min(0.4, intensity * 0.02) });
@@ -765,6 +780,26 @@ export class Sfx {
     src.connect(f).connect(g).connect(this.ambient);
     src.start(t, Math.random() * 3);
     src.stop(t + dur + 0.1);
+  }
+  /**
+   * "N players left" stinger: a swell, a deep hit and a bright chord that climbs as the field
+   * shrinks (10, 5, 3, and the final two get a double hit).
+   */
+  playersLeft(n: number) {
+    const root = n <= 2 ? 329.6 : n <= 3 ? 293.7 : n <= 5 ? 261.6 : 220;
+    const big = n <= 3, lead = 0.55;
+    this.burst({ dur: lead + 0.1, freq: 500, q: 0.8, gain: big ? 0.16 : 0.1, type: 'bandpass', sweepTo: 4200, attack: lead });
+    const hit = (d: number, k: number) => {
+      this.tone(62, 1.8, 0.42 * k, 'sine', 36, d, 0, 'punch', 0.25);
+      this.burst({ dur: 0.35, freq: 180, q: 0.6, gain: 0.25 * k, type: 'lowpass', delay: d, bus: 'punch', verb: 0.3 });
+      for (const [m, g] of [[1, 0.1], [1.5, 0.07], [2, 0.06], [2.52, 0.035]] as const) {
+        this.tone(root * m, 2.2, g * k, 'sawtooth', undefined, d, 0, 'master', 0.45);
+        this.tone(root * m * 1.004, 2.2, g * 0.6 * k, 'triangle', undefined, d + 0.01, m > 1.6 ? 0.3 : -0.3, 'master', 0.45);
+      }
+      this.tone(root * 4, 0.9, 0.04 * k, 'sine', undefined, d + 0.05, 0, 'master', 0.6); // shimmer
+    };
+    hit(lead, big ? 1 : 0.8);
+    if (n <= 2) hit(lead + 0.42, 1.1);
   }
   levelUp() {
     [523, 659, 784, 1047, 1319, 1568].forEach((f, i) => this.tone(f, 0.3, 0.14, 'triangle', undefined, i * 0.07));

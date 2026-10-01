@@ -32,6 +32,7 @@ document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.prev
 document.addEventListener('dblclick', (e) => e.preventDefault());
 
 progress(0.02, 'Loading engine');
+await (await import('./assets/toon')).loadToon();
 const { Game } = await import('./game/Game');
 const game = new Game(document.getElementById('app')!);
 await game.init(progress);

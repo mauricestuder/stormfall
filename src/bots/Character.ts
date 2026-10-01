@@ -1,27 +1,30 @@
-import { BoxGeometry, BufferAttribute, BufferGeometry, Color, CylinderGeometry, Group, Mesh, MeshBasicMaterial, Quaternion, SphereGeometry, Vector3, type Object3D } from 'three';
+import { roundedBox } from '../core/roundBox';
+import { SkinnedMesh, BackSide, ShaderMaterial, CapsuleGeometry, BufferAttribute, BufferGeometry, Color, CylinderGeometry, Group, Mesh, MeshBasicMaterial, Quaternion, SphereGeometry, Vector3, type Object3D } from 'three';
 import type { Skin } from '../game/Skins';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { mergeGeometries, mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { mergeToGeometry } from '../core/merge';
 import { attKey, buildGunModel, type WeaponInstance } from '../weapons/Weapon';
 import { TOY } from '../theme';
+import { ArmyRig, ARMY_HOLD } from './ArmyRig';
 import { plastic, type LitMat } from '../game/Look';
 
 function coloredBox(w: number, h: number, d: number, x: number, y: number, z: number, color: Color) {
-  const g = new BoxGeometry(w, h, d).toNonIndexed();
+  // Soft edges: toys, not crates.
+  const g = roundedBox(w, h, d);
   g.translate(x, y, z);
   const n = g.getAttribute('position').count, col = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) col.set([color.r, color.g, color.b], i * 3);
   g.setAttribute('color', new BufferAttribute(col, 3));
-  g.deleteAttribute('uv');
   return g;
 }
 
-/** Any geometry, flat-shaded, scaled, moved and painted one colour (so it merges with the boxes). */
+/** Any geometry, smooth-shaded, scaled, moved and painted one colour (so it merges with the boxes). */
 function colored(src: BufferGeometry, x: number, y: number, z: number, color: Color, sx = 1, sy = 1, sz = 1) {
+  src.scale(sx, sy, sz);
+  src.translate(x, y, z);
+  // Keep the shape's own (smooth) normals, re-aimed after a squash, so round parts read as round.
+  if (sx !== 1 || sy !== 1 || sz !== 1) src.computeVertexNormals();
   const g = src.index ? src.toNonIndexed() : src;
-  g.scale(sx, sy, sz);
-  g.translate(x, y, z);
-  g.computeVertexNormals();
   const n = g.getAttribute('position').count, col = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) col.set([color.r, color.g, color.b], i * 3);
   g.setAttribute('color', new BufferAttribute(col, 3));
@@ -34,11 +37,11 @@ const cyl = (rt: number, rb: number, h: number, x: number, y: number, z: number,
   colored(new CylinderGeometry(rt, rb, h, seg), x, y, z, c);
 
 /**
- * Body styles (Settings → Characters). The hitboxes don't change, only the looks:
+ * Body styles (Settings â†’ Characters). The hitboxes don't change, only the looks:
  * classic blocky soldiers, toy mini figures, round chubby people, or monsters. 'mix' gives
  * every bot a random one of the funny three.
  */
-export type BodyKind = 'classic' | 'minifig' | 'chubby' | 'monster' | 'armyman' | 'teddy' | 'robot';
+export type BodyKind = 'classic' | 'minifig' | 'chubby' | 'monster' | 'armyman' | 'teddy' | 'robot' | 'soldier' | 'merc';
 export type BodyStyle = BodyKind | 'mix';
 let bodyStyle: BodyStyle = 'mix';
 /** Toy Box mixes the toys; the classic island the three funny ones. */
@@ -157,26 +160,29 @@ function monsterBody(suit: Color, trim: Color, rnd: () => number): BodySpec {
   };
 }
 
-/** A green (or tan, grey, blue...) plastic army man, fused to his little base. */
+/** A green (or tan, grey, blue...) plastic army man. */
 function armymanBody(suit: Color): BodySpec {
   const hsl = { h: 0, s: 0, l: 0 };
   suit.getHSL(hsl);
-  const p = new Color().setHSL(hsl.h, Math.min(0.65, Math.max(0.42, hsl.s)), Math.min(0.42, Math.max(0.24, hsl.l * 0.85))), dk = p.clone().multiplyScalar(0.8), lt = p.clone().lerp(WHITE, 0.12);
+  const p = new Color().setHSL(hsl.h, Math.min(0.6, Math.max(0.42, hsl.s)), Math.min(0.3, Math.max(0.08, hsl.l * 0.6))), dk = p.clone().multiplyScalar(0.8), lt = p.clone().lerp(WHITE, 0.12);
   const parts = [
-    coloredBox(0.56, 0.66, 0.32, 0, 1.12, 0, p), // torso
-    coloredBox(0.6, 0.07, 0.34, 0, 0.82, 0, dk), // belt
+    colored(new CylinderGeometry(0.3, 0.25, 0.66, 14), 0, 1.12, 0, p, 1, 1, 0.58), // torso, broad at the shoulders
+    ball(0.3, 0, 1.44, 0, p, 1, 0.3, 0.58, 14), // rounded shoulders
+    colored(new CylinderGeometry(0.265, 0.265, 0.07, 14), 0, 0.82, 0, dk, 1, 1, 0.66), // belt
     coloredBox(0.08, 0.1, 0.36, -0.14, 0.85, 0, dk), // pouches
     coloredBox(0.08, 0.1, 0.36, 0.14, 0.85, 0, dk),
-    coloredBox(0.3, 0.32, 0.3, 0, 1.6, 0, p), // head
+    ball(0.165, 0, 1.6, 0, p, 1, 1.08, 1, 14), // head
     colored(new SphereGeometry(0.22, 12, 6, 0, Math.PI * 2, 0, Math.PI / 2), 0, 1.7, 0, lt, 1, 0.8, 1.05), // helmet
     cyl(0.25, 0.25, 0.03, 0, 1.7, 0, dk, 14), // brim
     coloredBox(0.2, 0.03, 0.03, 0, 1.64, -0.16, dk), // brow
     coloredBox(0.05, 0.03, 0.03, 0, 1.56, -0.17, dk), // nose
     coloredBox(0.4, 0.44, 0.16, 0, 1.16, 0.24, dk), // pack
-    cyl(0.07, 0.07, 0.36, 0, 1.18, 0.34, lt, 8).rotateZ(Math.PI / 2), // bedroll
-    coloredBox(0.95, 0.05, 0.7, 0, 0.025, 0, p), // the base they stand on
+    colored(new CylinderGeometry(0.07, 0.07, 0.36, 8).rotateZ(Math.PI / 2), 0, 1.45, 0.25, lt), // bedroll
   ];
-  const legGeo = coloredBox(0.24, 0.76, 0.28, 0, -0.38, 0, p);
+  const legGeo = mergeGeometries([
+    colored(new CapsuleGeometry(0.115, 0.5, 3, 10), 0, -0.36, 0, p),
+    coloredBox(0.22, 0.1, 0.32, 0, -0.71, -0.04, dk), // boot
+  ])!;
   return {
     parts, shoulders: [new Vector3(0.34, 1.4, 0), new Vector3(-0.34, 1.4, 0)], grip: GRIP, foregrip: FOREGRIP, gunAt: new Vector3(0.22, 1.22, -0.3),
     arm: 0.13, legGeo, legX: 0.15, legY: 0.8, markerY: 1.95, sleeve: p, hand: p,
@@ -200,8 +206,8 @@ function teddyBody(suit: Color, trim: Color): BodySpec {
     ball(0.06, 0.22, 1.86, -0.04, pale, 1, 1, 0.4, 8),
     ball(0.12, 0, 1.55, -0.25, pale, 1.1, 0.85, 0.8, 10), // snout
     ball(0.045, 0, 1.6, -0.34, nose, 1.2, 0.9, 1, 8), // nose
-    cyl(0.05, 0.05, 0.03, -0.11, 1.7, -0.27, BLACK, 10).rotateX(Math.PI / 2), // button eyes
-    cyl(0.05, 0.05, 0.03, 0.11, 1.7, -0.27, BLACK, 10).rotateX(Math.PI / 2),
+    colored(new CylinderGeometry(0.05, 0.05, 0.03, 10).rotateX(Math.PI / 2), -0.11, 1.7, -0.27, BLACK), // button eyes
+    colored(new CylinderGeometry(0.05, 0.05, 0.03, 10).rotateX(Math.PI / 2), 0.11, 1.7, -0.27, BLACK),
     coloredBox(0.14, 0.1, 0.06, -0.09, 1.34, -0.27, trim), // bow tie
     coloredBox(0.14, 0.1, 0.06, 0.09, 1.34, -0.27, trim),
     coloredBox(0.06, 0.07, 0.07, 0, 1.34, -0.28, trim.clone().multiplyScalar(0.7)),
@@ -222,8 +228,8 @@ function robotBody(suit: Color, trim: Color): BodySpec {
   const parts = [
     coloredBox(0.64, 0.62, 0.42, 0, 1.12, 0, tin), // chest can
     coloredBox(0.4, 0.26, 0.04, 0, 1.18, -0.22, dark), // dial panel
-    cyl(0.05, 0.05, 0.03, -0.1, 1.2, -0.24, new Color(0xff4a3a), 8).rotateX(Math.PI / 2),
-    cyl(0.05, 0.05, 0.03, 0.1, 1.2, -0.24, new Color(0x3aff7a), 8).rotateX(Math.PI / 2),
+    colored(new CylinderGeometry(0.05, 0.05, 0.03, 8).rotateX(Math.PI / 2), -0.1, 1.2, -0.24, new Color(0xff4a3a)),
+    colored(new CylinderGeometry(0.05, 0.05, 0.03, 8).rotateX(Math.PI / 2), 0.1, 1.2, -0.24, new Color(0x3aff7a)),
     coloredBox(0.52, 0.08, 0.44, 0, 0.8, 0, dark), // waist
     coloredBox(0.12, 0.08, 0.12, 0, 1.47, 0, dark), // neck
     coloredBox(0.44, 0.36, 0.38, 0, 1.68, 0, tin), // head box
@@ -256,6 +262,45 @@ function crownParts(y: number) {
     p.push(coloredBox(0.07, 0.14, 0.07, Math.cos(a) * 0.2, y + 0.1, Math.sin(a) * 0.2, gold), ball(0.035, Math.cos(a) * 0.2, y + 0.19, Math.sin(a) * 0.2, gem, 1, 1, 1, 6));
   }
   return p;
+}
+
+const outlineMats = new Map<number, ShaderMaterial>();
+const outlineGeos = new WeakMap<BufferGeometry, BufferGeometry>();
+/** Same shape, welded so every corner has one averaged normal: pushed out along it, the shell has no cracks. */
+function outlineGeometry(src: BufferGeometry) {
+  let g = outlineGeos.get(src);
+  if (!g) {
+    const p = new BufferGeometry();
+    p.setAttribute('position', src.getAttribute('position').clone());
+    // Skinned figures: the shell has to bend with the bones too.
+    for (const k of ['skinIndex', 'skinWeight']) if (src.getAttribute(k)) p.setAttribute(k, src.getAttribute(k).clone());
+    if (src.index) p.setIndex(src.index.clone());
+    g = mergeVertices(p, 1e-3);
+    g.computeVertexNormals();
+    outlineGeos.set(src, g);
+  }
+  return g;
+}
+/** Inverted hull: back faces pushed out, a few pixels thick at any distance. */
+function outlineMaterial(color: number) {
+  return new ShaderMaterial({
+    uniforms: { color: { value: new Color(color) } },
+    vertexShader: `#include <common>
+      #include <skinning_pars_vertex>
+      void main() {
+        #include <skinbase_vertex>
+        #include <beginnormal_vertex>
+        #include <skinnormal_vertex>
+        #include <begin_vertex>
+        #include <skinning_vertex>
+        vec4 wp = modelMatrix * vec4(transformed, 1.0);
+        float w = min(0.14, 0.008 + distance(wp.xyz, cameraPosition) * 0.0011);
+        wp.xyz += normalize(mat3(modelMatrix) * objectNormal) * w;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }`,
+    fragmentShader: `uniform vec3 color; void main() { gl_FragColor = vec4(color, 1.0); }`,
+    side: BackSide,
+  });
 }
 
 const gunCache = new Map<string, BufferGeometry>();
@@ -310,7 +355,10 @@ const POSE_LEN = 0.55;
 
 /** An arm pointing along +z from the shoulder: sleeve then hand. */
 function armGeometry(len: number, sleeve: Color, skin: Color, t = 0.13) {
-  return mergeGeometries([coloredBox(t, t, len - 0.06, 0, 0, (len - 0.06) / 2, sleeve), coloredBox(t * 0.85, t * 0.85, 0.12, 0, 0, len, skin)])!;
+  // A rounded sleeve and a ball of a fist.
+  const sl = len - 0.06, r = t / 2;
+  const sleeveGeo = colored(new CapsuleGeometry(r, Math.max(0.01, sl - t), 3, 10).rotateX(Math.PI / 2), 0, 0, sl / 2, sleeve);
+  return mergeGeometries([sleeveGeo, ball(t * 0.52, 0, 0, len - 0.02, skin, 1, 1, 1.15, 10)])!;
 }
 function armTo(from: Vector3, to: Vector3, sleeve: Color, skin: Color, t = 0.13) {
   const d = to.clone().sub(from), g = armGeometry(d.length(), sleeve, skin, t);
@@ -326,9 +374,11 @@ function armTo(from: Vector3, to: Vector3, sleeve: Color, skin: Color, t = 0.13)
 export class Character {
   root = new Group();
   private body!: Mesh;
-  private legs: Mesh[] = [];
+  private legs: Object3D[] = [];
   private gun: Mesh | null = null;
   private gunHolder = new Group();
+  /** The rigged plastic army man, when this is one. */
+  private army: ArmyRig | null = null;
   private mat: LitMat;
   private walkPhase = 0;
   private flash = 0;
@@ -339,6 +389,34 @@ export class Character {
 
   /** Which body this one got. */
   readonly kind: BodyKind;
+
+  /** A coloured rim round the whole figure (red: enemy, blue: squadmate), so they stand out from the scenery. */
+  private outlines: Mesh[] = [];
+  /** Hidden on the dead: a corpse shouldn't look like a threat. */
+  set outlined(v: boolean) {
+    for (const o of this.outlines) o.visible = v;
+  }
+  outline(color: number) {
+    let mat = outlineMats.get(color);
+    if (!mat) outlineMats.set(color, (mat = outlineMaterial(color)));
+    if (this.army) {
+      const t = this.army, o = new SkinnedMesh(outlineGeometry(t.mesh.geometry), mat);
+      o.bind(t.skeleton, t.mesh.bindMatrix);
+      o.frustumCulled = false;
+      o.castShadow = false;
+      o.raycast = () => {};
+      t.mesh.parent!.add(o);
+      this.outlines.push(o);
+      return;
+    }
+    for (const m of [this.body, ...(this.legs as Mesh[])]) {
+      const o = new Mesh(outlineGeometry(m.geometry), mat);
+      o.castShadow = false;
+      o.raycast = () => {};
+      m.add(o);
+      this.outlines.push(o);
+    }
+  }
   private crown: boolean;
 
   /** `kind` defaults to the Settings choice (a random funny one per bot in 'mix'). */
@@ -347,12 +425,18 @@ export class Character {
 
   constructor(suit: Color, trim: Color, marker?: number, outfit?: Skin, posable = false, kind: BodyKind = (TOY && outfit?.body) || botBodyKind(), crown = false) {
     this.crown = crown;
+    // Every soldier is a plastic army man.
+    if (kind === 'soldier' || kind === 'merc') kind = 'armyman';
     // Plastic figures are glossy; bears are felt.
-    this.mat = plastic({ vertexColors: true }, kind === 'teddy' ? 0.95 : kind === 'robot' ? 0.3 : 0.5);
+    this.mat = plastic({ vertexColors: true }, kind === 'teddy' ? 0.95 : kind === 'robot' || kind === 'armyman' ? 0.26 : 0.5);
     this.kind = kind;
     if (outfit) {
       suit = new Color(outfit.suit);
       trim = new Color(outfit.trim);
+    }
+    if (kind === 'armyman') {
+      this.buildArmy(suit, marker);
+      return;
     }
     if (kind !== 'classic') {
       this.buildFunny(kind, suit, trim, outfit, marker, posable);
@@ -431,6 +515,44 @@ export class Character {
     this.root.traverse((o) => (o.castShadow = true));
   }
 
+  private buildArmy(suit: Color, marker: number | undefined) {
+    const t = (this.army = new ArmyRig(suit, this.mat, this.crown));
+    this.body = t.mesh;
+    this.gunHolder = t.gunMount;
+    this.legs = t.legs;
+    this.root.add(t.root);
+    if (marker !== undefined) this.root.add(new Mesh(coloredBox(0.3, 0.07, 0.3, 0, 2.02, 0, new Color(marker)), this.mat));
+  }
+
+  /** Bodies that play their own death animation instead of toppling over like a statue. */
+  get animatedDeath() {
+    return false;
+  }
+
+  die() {
+    this.army?.die();
+  }
+
+  revive() {
+    this.army?.revive();
+  }
+
+  /** Advance the death animation (the arms and knees going limp while the body topples). */
+  tick(dt: number) {
+    this.army?.tick(dt);
+  }
+
+  /** First-person body: only the legs show (the camera sits where the head is). */
+  legsOnly() {
+    if (this.army) {
+      this.army.legsOnly();
+      return;
+    }
+    this.body.visible = false;
+    this.gunHolder.visible = false;
+    for (const a of this.armPivots) a.visible = false;
+  }
+
   get legsList() {
     return this.legs;
   }
@@ -444,8 +566,18 @@ export class Character {
     return [GRIP.clone().sub(SHOULDER_R).normalize(), FOREGRIP.clone().sub(SHOULDER_L).normalize()];
   }
 
+  /** This body's resting arm directions (army men hold the gun their own way). */
+  get hold(): Vector3[] {
+    return this.army ? ARMY_HOLD.map((v) => v.clone()) : Character.holdDirs;
+  }
+
   /** Point the arms (posable characters only). Directions are in character space; null = holding the gun. */
   pose(right: Vector3 | null, left: Vector3 | null) {
+    if (this.army) {
+      this.army.poseR = right && right.clone();
+      this.army.poseL = left && left.clone();
+      return;
+    }
     if (!this.armPivots.length) return;
     const [hr, hl] = Character.holdDirs;
     this.armPivots[0].quaternion.setFromUnitVectors(Z, (right ?? hr).clone().normalize());
@@ -463,10 +595,12 @@ export class Character {
     if (this.gun) this.gunHolder.remove(this.gun);
     this.gun = null;
     if (!w) return;
-    this.gun = new Mesh(gunGeometry(w), gunMat);
-    this.gun.scale.setScalar(1.3);
+    const geo = gunGeometry(w), k = this.army ? 1.1 : 1.3;
+    this.gun = new Mesh(geo, gunMat);
+    this.gun.scale.setScalar(k);
     this.gun.castShadow = true;
     this.gunHolder.add(this.gun);
+    this.army?.setGunShape(geo, k);
   }
 
   hit() {
@@ -475,6 +609,13 @@ export class Character {
 
   /** Walk cycle, crouch squash, hit flash. */
   animate(dt: number, speed: number, onGround: boolean, crouched: boolean, seated = false) {
+    if (this.army) {
+      this.army.animate(dt, speed, onGround, crouched, seated, !!this.gun && this.gunHolder.visible);
+      this.root.scale.setScalar(this.size);
+      this.flash -= dt;
+      this.mat.emissive.setHex(this.flash > 0 ? 0x993322 : 0x000000);
+      return;
+    }
     this.walkPhase += dt * speed * 1.6;
     const swing = seated ? -1.3 : onGround ? Math.sin(this.walkPhase) * Math.min(speed / 6, 1) * 0.6 : 0.3;
     this.legs[0].rotation.x = seated ? swing : swing;

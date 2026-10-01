@@ -11,6 +11,6 @@ if (css) html = html.replace(css[0], () => `<style>${readFileSync(join('dist', c
 const code = readFileSync(join('dist', js[1]), 'utf8').replace(/<\/script/gi, '<\/script');
 html = html.replace('</body>', () => `<script type="module">${code}</script>\n</body>`);
 const theme = process.env.THEME;
-const out = process.env.STYLE ? `Stormfall-style-${process.env.STYLE}.html` : !theme ? 'Stormfall.html' : theme === 'default' ? 'Stormfall-classic.html' : `Stormfall-${theme}.html`;
+const out = process.env.STYLE ? `Stormzone-style-${process.env.STYLE}.html` : !theme ? 'Stormzone.html' : theme === 'default' ? 'Stormzone-classic.html' : `Stormzone-${theme}.html`;
 writeFileSync(out, html);
 console.log(`${out} written (${Math.round(statSync(out).size / 1024)} KB)`);

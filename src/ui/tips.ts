@@ -11,7 +11,7 @@ export const TIPS = [
   'Armor plates work while you move: press V between fights.',
   'Lost your first life? Win the Gulag 1v1 to drop back in.',
   'The storm hurts more every circle. Watch the timer at the top.',
-  'Hold G to aim a grenade, Z to switch between frag, smoke and flash.',
+  'Tap G to throw a grenade, hold G or press Z to switch between frag, smoke and flash.',
   'Ziplines and cars are the fastest way across the island.',
   'Tab opens your backpack without stopping: you can still walk.',
   'The Gold Mine and the Caves hide loot underground.',

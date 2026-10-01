@@ -1,3 +1,5 @@
+import { toonGunGeometry, toonReady } from '../assets/toon';
+import { TOY } from '../theme';
 import type { WeaponId } from '../weapons/Weapon';
 
 /** Side-on silhouettes of every gun (100 × 40 box), for the weapon slots and inventory. */
@@ -14,7 +16,66 @@ const GUNS: Record<WeaponId, string> = {
   rocket: 'M6 10h84v13H6z M90 8h8v17h-8z M2 12h6v9H2z M36 23h8l-2 11h-8z M54 23h7l-2 9h-7z M40 4h14v6H40z',
 };
 
+const pics = new Map<WeaponId, string>();
+/**
+ * The real 3D gun seen side-on (barrel to the right), flat-shaded onto a canvas, so the slots show
+ * exactly the gun in your hands. Triangles are painted far to near with a dark outline under them.
+ */
+function gunPicture(id: WeaponId) {
+  let url = pics.get(id);
+  if (url) return url;
+  const geo = toonGunGeometry(id, false, 1), pos = geo.getAttribute('position'), col = geo.getAttribute('color');
+  geo.computeBoundingBox();
+  const b = geo.boundingBox!, W = 300, H = 120, pad = 8;
+  const k = Math.min((W - pad * 2) / (b.max.z - b.min.z), (H - pad * 2) / (b.max.y - b.min.y));
+  const ox = W / 2 + ((b.max.z + b.min.z) / 2) * k, oy = H / 2 + ((b.max.y + b.min.y) / 2) * k;
+  const tris: { x: number; pts: number[]; c: string }[] = [];
+  const L = [0.35, 0.85, 0.4], ln = Math.hypot(L[0], L[1], L[2]);
+  for (let i = 0; i < pos.count; i += 3) {
+    const a = [pos.getX(i), pos.getY(i), pos.getZ(i)], c = [pos.getX(i + 1), pos.getY(i + 1), pos.getZ(i + 1)], d = [pos.getX(i + 2), pos.getY(i + 2), pos.getZ(i + 2)];
+    const u = [c[0] - a[0], c[1] - a[1], c[2] - a[2]], v = [d[0] - a[0], d[1] - a[1], d[2] - a[2]];
+    let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    const nl = Math.hypot(n[0], n[1], n[2]) || 1;
+    n = n.map((x) => x / nl);
+    if (n[0] < 0) n = n.map((x) => -x);
+    const lit = 0.5 + 0.6 * Math.max(0, (n[0] * L[0] + n[1] * L[1] + n[2] * L[2]) / ln);
+    const rgb = [col.getX(i), col.getY(i), col.getZ(i)].map((x) => Math.min(255, Math.round(Math.pow(x, 1 / 2.2) * 255 * lit)));
+    tris.push({ x: (a[0] + c[0] + d[0]) / 3, pts: [ox - a[2] * k, oy - a[1] * k, ox - c[2] * k, oy - c[1] * k, ox - d[2] * k, oy - d[1] * k], c: `rgb(${rgb.join(',')})` });
+  }
+  tris.sort((p, q) => p.x - q.x);
+  const cv = document.createElement('canvas');
+  cv.width = W;
+  cv.height = H;
+  const ctx = cv.getContext('2d')!;
+  ctx.lineJoin = 'round';
+  const path = (t: { pts: number[] }) => {
+    ctx.beginPath();
+    ctx.moveTo(t.pts[0], t.pts[1]);
+    ctx.lineTo(t.pts[2], t.pts[3]);
+    ctx.lineTo(t.pts[4], t.pts[5]);
+    ctx.closePath();
+  };
+  ctx.fillStyle = ctx.strokeStyle = '#0c0d10';
+  ctx.lineWidth = 5;
+  for (const t of tris) {
+    path(t);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.lineWidth = 0.6;
+  for (const t of tris) {
+    path(t);
+    ctx.fillStyle = ctx.strokeStyle = t.c;
+    ctx.fill();
+    ctx.stroke();
+  }
+  url = cv.toDataURL('image/png');
+  pics.set(id, url);
+  return url;
+}
+
 export function gunIcon(id: WeaponId) {
+  if (TOY && toonReady()) return `<img class="gun-ico pic" src="${gunPicture(id)}" alt="" draggable="false">`;
   return `<svg class="gun-ico" viewBox="0 0 100 40" aria-hidden="true"><path d="${GUNS[id]}" fill="currentColor" fill-rule="nonzero"/></svg>`;
 }
 

@@ -249,6 +249,6 @@ function webrtcProblem() {
       detail = String((e as Error)?.message || e);
     }
   }
-  if (embedded) return 'Online play can\'t work inside a preview window (like the claude.ai page or a file preview). Save Stormfall.html, then double-click it in File Explorer so it opens as its own Chrome tab: the address bar should start with file:///.';
+  if (embedded) return 'Online play can\'t work inside a preview window (like the claude.ai page or a file preview). Save Stormzone.html, then double-click it in File Explorer so it opens as its own Chrome tab: the address bar should start with file:///.';
   return `This browser has WebRTC turned off (${detail || 'blocked'}). Try turning off ad or privacy extensions, or use another computer: school and work PCs often block it.`;
 }

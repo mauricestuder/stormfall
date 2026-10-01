@@ -14,7 +14,7 @@ export const ACTIONS: { code: string; label: string }[] = [
   { code: 'Digit1', label: 'Weapon 1' },
   { code: 'Digit2', label: 'Weapon 2' },
   { code: 'Digit3', label: 'Hands (run faster)' },
-  { code: 'KeyG', label: 'Grenade (tap: ready, hold: wheel)' },
+  { code: 'KeyG', label: 'Grenade (tap: throw, hold: wheel)' },
   { code: 'KeyZ', label: 'Next grenade type' },
   { code: 'KeyX', label: 'Grappling hook' },
   { code: 'KeyV', label: 'Armor plate' },

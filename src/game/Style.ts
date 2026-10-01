@@ -108,7 +108,11 @@ export class InkSky {
             col = mix(col, vec3(1.0, 0.97, 0.8) * 2.2, smoothstep(0.9975, 0.998, s));
             col = mix(col, col + uSunCol * 0.25, smoothstep(0.985, 0.986, s));
           #else
-            vec3 top = uSky * vec3(0.62, 0.74, 0.95);
+            #ifdef WAR
+              vec3 top = uSky * vec3(0.78, 0.72, 0.68);
+            #else
+              vec3 top = uSky * vec3(0.62, 0.74, 0.95);
+            #endif
             vec3 col = mix(uFog, top, smoothstep(0.0, 0.55, h));
             col = mix(col, uFog * 0.8, smoothstep(0.0, -0.2, h));
             col += uSunCol * (pow(s, 8.0) * 0.25 + pow(s, 90.0) * 0.6 + smoothstep(0.9993, 0.9996, s) * 2.0);

@@ -1,5 +1,6 @@
 import { Color, Group, Vector3 } from 'three';
 import { CONFIG } from '../config';
+import { TOY } from '../theme';
 import { moveBody, type Body } from '../core/Collision';
 import { clamp, damp } from '../core/rng';
 import type { Difficulty } from '../core/Settings';
@@ -142,6 +143,13 @@ export class Bot implements Combatant {
   private cover: Vector3 | null = null;
   private coverTimer = 0;
   private peek = 0;
+  /** Seconds since something last hurt us (under fire = get out of the open). */
+  private hurtT = 99;
+  /** Hunting someone who ducked out of sight: come at them from the side instead of straight on. */
+  private flank: Vector3 | null = null;
+  private flankFor = new Vector3(1e9, 0, 0);
+  /** Low and out of heals: break line of sight and wait it out. */
+  private retreating = false;
   private crouch = false;
   /** Seconds of slide left (bots slide into and around fights). */
   private slideT = 0;
@@ -179,7 +187,13 @@ export class Bot implements Combatant {
     this.skill = (0.95 + Math.random() * 0.12) * game.tuning.skill;
     this.jumpAt = 0.12 + Math.random() * 0.76;
     const suit = new Color().setHSL(suitHue, 0.65, 0.5), trim = new Color().setHSL(suitHue, 0.4, 0.25);
-    this.character = new Character(suit, trim, marker, outfit);
+    // Toy Box: everyone is a little green army man (the outline tells friend from foe).
+    const friend = marker === 0x4cff6a; // TEAMMATE_MARKER
+    const army = 0x234a16;
+    this.character = TOY
+      ? new Character(new Color(army), new Color(army).multiplyScalar(0.7), marker, undefined, false, 'armyman')
+      : new Character(suit, trim, marker, outfit);
+    this.character.outline(friend ? 0x1f6fc0 : 0xc81c1c);
     this.character.setGun(this.weapon);
     game.scene.add(this.character.root);
     this.character.root.visible = false;
@@ -234,6 +248,7 @@ export class Bot implements Combatant {
 
   onDamaged(attacker: Combatant | null, _amount: number) {
     this.character.hit();
+    this.hurtT = 0;
     if (this.boss && attacker?.isPlayer) this.boss.hurtByYou = 0;
     this.healLeft = 0;
     if (this.dummy) return;
@@ -243,6 +258,21 @@ export class Bot implements Combatant {
       this.lastSeen = 0;
       this.reaction = Math.min(this.reaction, 0.25);
     }
+  }
+
+  /** Heard someone shooting nearby: head over, carefully. */
+  heard(t: Combatant) {
+    if (this.target || this.dummy || this.boss || this.inGulag) return;
+    this.target = t;
+    this.lastKnown.copy(t.body.pos).add(tmpC.set((Math.random() - 0.5) * 16, 0, (Math.random() - 0.5) * 16));
+    this.lastSeen = 0;
+    this.targetVisible = false;
+  }
+
+  /** Does the other gun suit this range better? */
+  private backupSuits(dist: number) {
+    const b = this.backup;
+    return !!b && Math.abs(Math.log(Math.max(1, dist) / b.def.botRange)) < Math.abs(Math.log(Math.max(1, dist) / this.weapon.def.botRange)) - 0.4;
   }
 
   /** A squadmate spotted someone. */
@@ -380,6 +410,7 @@ export class Bot implements Combatant {
     this.pathCd -= dt;
     this.grenadeCd -= dt;
     this.blind = Math.max(0, this.blind - dt);
+    this.hurtT += dt;
 
     if (this.mantle) {
       if (stepMantle(this.mantle, dt, b.pos)) {
@@ -473,6 +504,7 @@ export class Bot implements Combatant {
           speed = P.sprintSpeed;
         } else {
           this.peek -= dt;
+          if (this.retreating && this.peek < -0.5 && this.health + this.armor > 60) this.peek = 0.4;
           if (this.peek > 0) {
             move.set(-to.z * this.strafeDir, 0, to.x * this.strafeDir);
             speed = P.walkSpeed * 0.7;
@@ -486,7 +518,10 @@ export class Bot implements Combatant {
               this.strafeDir = Math.random() < 0.5 ? -1 : 1;
             }
           }
-          if (this.coverTimer <= 0) this.cover = null;
+          if (this.coverTimer <= 0) {
+            this.cover = null;
+            this.retreating = false;
+          }
         }
       } else if (this.targetVisible) {
         if (this.strafeTimer <= 0) {
@@ -495,16 +530,44 @@ export class Bot implements Combatant {
           if (Math.random() < 0.3 && b.onGround) b.vel.y = P.jumpVelocity;
           else if (Math.random() < 0.3 && b.onGround && dist > 8) this.slideT = 0.8;
         }
-        const pref = this.weapon.def.botRange;
-        const approach = dist > pref * 1.3 ? 1 : dist < pref * 0.6 ? -0.6 : 0;
-        move.set(-to.z * this.strafeDir, 0, to.x * this.strafeDir).addScaledVector(to, approach);
-        speed = P.walkSpeed * 0.9;
-        this.tryFire(dt, game, t, dist);
+        const w = this.weapon, pref = w.def.botRange;
+        if (pref <= 20 && dist > pref * 2.2 && !this.backupSuits(dist)) {
+          // A close-range gun against someone far off: don't plink, close the gap fast and weave.
+          this.steer(t.body.pos, game, move);
+          move.normalize().addScaledVector(tmpD.set(-to.z * this.strafeDir, 0, to.x * this.strafeDir), 0.55);
+          speed = P.sprintSpeed;
+          if (dist < w.def.range * 0.5) this.tryFire(dt, game, t, dist);
+          else {
+            this.swapCd -= dt;
+            this.pickGun(dist);
+            this.updateAim(dt, t, dist);
+          }
+        } else {
+          // Hold the gun's range: long guns keep their distance, close ones push in.
+          const approach = dist > pref * 1.3 ? 1 : dist < pref * (pref >= 35 ? 0.8 : 0.55) ? -0.8 : 0;
+          move.set(-to.z * this.strafeDir, 0, to.x * this.strafeDir).addScaledVector(to, approach);
+          speed = P.walkSpeed * 0.9;
+          this.tryFire(dt, game, t, dist);
+        }
       } else {
-        // Hunt: run to where they were last seen (around walls if needed), sliding now and then.
-        this.steer(this.lastKnown, game, move);
+        // Hunt: not straight at them. Swing out to one side first (a flank), then close in on
+        // where they were last seen, sliding now and then.
+        if (distXZ(this.flankFor, this.lastKnown) > 6) {
+          this.flankFor.copy(this.lastKnown);
+          this.flank = null;
+          const d0 = distXZ(this.lastKnown, b.pos);
+          if (d0 > 14 && Math.random() < 0.7) {
+            const s = Math.random() < 0.5 ? -1 : 1, off = Math.min(16, d0 * 0.45);
+            const fx = b.pos.x + (this.lastKnown.x - b.pos.x) * 0.55 - to.z * s * off, fz = b.pos.z + (this.lastKnown.z - b.pos.z) * 0.55 + to.x * s * off;
+            if (game.nav.walkableAt(fx, fz) && !game.zone.isOutside(fx, fz)) this.flank = new Vector3(fx, 0, fz);
+          }
+        }
+        if (this.flank && distXZ(this.flank, b.pos) < 3) this.flank = null;
+        this.steer(this.flank ?? this.lastKnown, game, move);
         speed = P.sprintSpeed * 0.9;
-        if (b.onGround && this.slideT <= 0 && Math.random() < dt * 0.5) this.slideT = 0.8;
+        // Nearly there: slow down and crouch-walk the last bit (no running round the corner into them).
+        if (!this.flank && distXZ(this.lastKnown, b.pos) < 10) speed = P.walkSpeed * 0.8;
+        else if (b.onGround && this.slideT <= 0 && Math.random() < dt * 0.5) this.slideT = 0.8;
         if (distXZ(this.lastKnown, b.pos) < 2) this.target = null;
       }
     } else {
@@ -831,12 +894,19 @@ export class Bot implements Combatant {
     const t = this.target;
     if (t && !this.inGulag) {
       const hurt = this.health + this.armor < 90 || this.weapon.mag <= magSize(this.weapon) * 0.25;
-      if (!this.cover && !this.boss && this.targetVisible && hurt && Math.random() < game.tuning.cover * 0.5) {
-        this.cover = this.findCover(game, t);
+      // Getting shot in the open, or needing a reload mid-fight: find something to hide behind.
+      const underFire = this.hurtT < 1.2, dist = distXZ(t.body.pos, this.body.pos);
+      const outgunned = this.weapon.def.botRange <= 20 && dist > 45 && !this.backupSuits(dist);
+      const want = hurt || underFire || outgunned;
+      // Low, no heals left: fall back out of sight and stay there a while.
+      const dying = this.health + this.armor < 40 && this.heals <= 0;
+      if (!this.cover && !this.boss && this.targetVisible && want && Math.random() < Math.min(0.9, game.tuning.cover * 0.5 + (underFire ? 0.35 : 0.15))) {
+        this.cover = this.findCover(game, t, dying ? 20 : 12);
+        this.retreating = dying;
         if (this.cover) {
-          this.coverTimer = 6 + Math.random() * 4;
-          this.peek = -0.5;
-          if (this.smokes > 0 && this.health < 50 && Math.random() < 0.5) this.throwAt(game, 'smoke', tmpC.lerpVectors(this.body.pos, t.body.pos, 0.25));
+          this.coverTimer = dying ? 12 + Math.random() * 6 : 6 + Math.random() * 4;
+          this.peek = dying ? -8 : -0.5;
+          if (this.smokes > 0 && (this.health < 50 || dying) && Math.random() < 0.6) this.throwAt(game, 'smoke', tmpC.lerpVectors(this.body.pos, t.body.pos, 0.25));
         }
       }
       // Flush them out of cover with a grenade.
@@ -861,11 +931,11 @@ export class Bot implements Combatant {
   }
 
   /** Somewhere nearby, reachable, that a wall or hill hides from the threat. */
-  private findCover(game: Game, threat: Combatant): Vector3 | null {
+  private findCover(game: Game, threat: Combatant, reach = 12): Vector3 | null {
     const b = this.body, te = tmpE.set(threat.body.pos.x, threat.body.pos.y + 1.5, threat.body.pos.z);
     let best: Vector3 | null = null, bd = Infinity;
-    for (let k = 0; k < 14; k++) {
-      const a = (k / 14) * Math.PI * 2 + Math.random() * 0.4, r = 3 + Math.random() * 9;
+    for (let k = 0; k < 16; k++) {
+      const a = (k / 16) * Math.PI * 2 + Math.random() * 0.4, r = 3 + Math.random() * (reach - 3);
       const x = b.pos.x + Math.cos(a) * r, z = b.pos.z + Math.sin(a) * r;
       if (!game.nav.walkableAt(x, z)) continue;
       const y = game.map.groundAt(x, z) + 1.0;
@@ -873,6 +943,8 @@ export class Bot implements Combatant {
       const dist = dir.length();
       dir.divideScalar(dist);
       if (game.world.raycast(te, dir, dist) > dist - 0.6) continue;
+      // Close by, not right next to them, and not out in the storm.
+      if (game.zone.isOutside(x, z)) continue;
       const score = r + Math.max(0, 14 - dist) * 2;
       if (score < bd) {
         bd = score;
@@ -1146,6 +1218,7 @@ export class Bot implements Combatant {
 
   die(game: Game) {
     this.alive = false;
+    this.character.outlined = false;
     if (this.vehicle) this.exitVehicle(game);
     if (!this.mesh.parent || !this.mesh.visible || this.mode === 'plane') {
       game.scene.remove(this.mesh);
@@ -1155,6 +1228,7 @@ export class Bot implements Combatant {
     this.deathT = 0;
     this.glider.visible = false;
     this.character.setGun(null);
+    this.character.die();
     const h = this.lastHitDir, fx = -Math.sin(this.yaw), fz = -Math.cos(this.yaw), rx = Math.cos(this.yaw), rz = -Math.sin(this.yaw);
     const along = h.x * fx + h.z * fz, side = h.x * rx + h.z * rz, n = Math.hypot(along, side) || 1;
     // Pushed from behind: fall on your face; from the front: on your back; from the side: sideways.
@@ -1190,12 +1264,18 @@ export class Bot implements Combatant {
     // Topple over (easing in like a real fall, with a small bounce as the body hits the ground).
     const k = Math.min(1, t / 0.55), fall = k * k + (k >= 1 ? Math.sin(Math.min(1, (t - 0.55) / 0.25) * Math.PI) * -0.06 : 0);
     root.rotation.order = 'YXZ';
-    root.rotation.set(this.fallX * fall, this.yaw, this.fallZ * fall);
-    const legs = this.character.legsList;
-    legs[0].rotation.x = damp(legs[0].rotation.x, 0.35, 6, dt);
-    legs[1].rotation.x = damp(legs[1].rotation.x, -0.15, 6, dt);
     root.position.copy(b.pos);
-    root.position.y += Math.min(1, fall) * 0.12;
+    if (this.character.animatedDeath) {
+      root.rotation.set(0, this.yaw, 0);
+      this.character.tick(dt);
+    } else {
+      this.character.tick(dt);
+      root.rotation.set(this.fallX * fall, this.yaw, this.fallZ * fall);
+      const legs = this.character.legsList;
+      legs[0].rotation.x = damp(legs[0].rotation.x, 0.35, 6, dt);
+      legs[1].rotation.x = damp(legs[1].rotation.x, -0.15, 6, dt);
+      root.position.y += Math.min(1, fall) * 0.12;
+    }
     if (t > 3.5) root.position.y -= (t - 3.5) * 0.7;
     if (t > 5) {
       this.deathT = -1;
@@ -1206,6 +1286,8 @@ export class Bot implements Combatant {
   /** Brings a dead bot back (gulag opponents, practice dummies). */
   revive(game: Game, at: Vector3) {
     this.alive = true;
+    this.character.outlined = true;
+    this.character.revive();
     this.backup = null;
     this.health = 100;
     this.armor = 0;

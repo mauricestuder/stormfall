@@ -1,12 +1,14 @@
+import { roundedBar } from '../core/roundBox';
 import {
-  AdditiveBlending, BoxGeometry, DirectionalLight, DoubleSide, Group, HemisphereLight, Mesh, MeshBasicMaterial,
+  AdditiveBlending, DirectionalLight, DoubleSide, Group, HemisphereLight, Mesh, MeshBasicMaterial,
   MeshLambertMaterial, Object3D, PerspectiveCamera, PlaneGeometry, PointLight, Scene, Vector3, WebGLRenderer,
 } from 'three';
 import { clamp, damp, lerp } from '../core/rng';
 import type { Player } from '../player/Player';
 import { CAMOS } from '../game/Profile';
-import { attKey, lambert, type WeaponId, type WeaponInstance } from './Weapon';
+import { armyGreen, attKey, lambert, type WeaponId, type WeaponInstance } from './Weapon';
 import { TOY } from '../theme';
+import { gunInfo, toonGunGeometry, toonReady } from '../assets/toon';
 import { plastic, type LitMat } from '../game/Look';
 
 /** A first-person gun with the moving parts the animations need. Units are gun-space (scaled 0.55 on screen). */
@@ -51,7 +53,7 @@ export interface ViewState {
 }
 
 const SCALE = 0.55;
-const unit = new BoxGeometry(1, 1, 1);
+const unit = roundedBar();
 
 function box(parent: Object3D, w: number, h: number, d: number, color: number, x: number, y: number, z: number, rx = 0, emissive = 0) {
   const m = new Mesh(unit, lambert(color, emissive));
@@ -122,8 +124,62 @@ export function setViewCamo(c: number | null) {
   camoAccent = (c !== null && CAMOS.find((x) => x.color === c)?.accent) || null;
 }
 
+/** Gun-space length of each first-person gun (grip to muzzle and stock). */
+const VIEW_LEN: Record<WeaponId, number> = { pistol: 0.26, revolver: 0.3, smg: 0.5, burst: 0.6, ar: 0.72, lmg: 0.74, shotgun: 0.76, dmr: 0.82, sniper: 0.9, rocket: 0.9 };
+const TOON_MAT = plastic({ vertexColors: true }, 0.35);
+
+/** The kit's cartoon gun in your hands (no moving parts: the hands still do the reload). */
+function buildToonView(w: WeaponInstance): GunParts {
+  const P = buildBase(w), id = w.def.id;
+  const geo = toonGunGeometry(id, !!w.def.mythic, VIEW_LEN[id], w.def.mythic ? null : camo);
+  const root = new Group();
+  root.add(new Mesh(geo, TOON_MAT));
+  const info = gunInfo(geo);
+  const support = P.support.clone().setY(info.bottomAt(P.support.z) + 0.005);
+  const G: GunParts = {
+    ...P, root, mag: null, slide: null, pump: null, bolt: null,
+    muzzle: info.muzzle, sightY: info.top + 0.012, support,
+    eject: P.eject.clone().setY(info.top - 0.03),
+    magWell: P.magWell.clone().setY(info.bottomAt(P.magWell.z * 0.5) - 0.1),
+    handle: P.slide || P.pump ? support : P.handle,
+  };
+  if (w.att.scope && id !== 'sniper') {
+    const y = G.sightY + 0.045, z = id === 'rocket' ? -0.05 : -0.08;
+    box(root, 0.03, 0.03, 0.04, DARK, 0, y - 0.035, z);
+    scopeTube(root, 0.046, 0.2, y, z);
+    G.sightY = y;
+  } else if (!['sniper', 'dmr', 'rocket'].includes(id)) {
+    // Guns without an optic get a mini red dot on top, so aiming has something to line up.
+    const y = info.top + 0.024, z = id === 'pistol' || id === 'revolver' ? -0.03 : -0.06, s = 0.036, t = 0.004;
+    box(root, s * 0.8, 0.008, 0.04, DARK, 0, info.top + 0.003, z);
+    box(root, t, s, 0.012, DARK, -s / 2, y, z - 0.01);
+    box(root, t, s, 0.012, DARK, s / 2, y, z - 0.01);
+    box(root, s + t, t, 0.012, DARK, 0, y + s / 2, z - 0.01);
+    const pane = new Mesh(unit, HOLO);
+    pane.scale.set(s, s, 0.001);
+    pane.position.set(0, y, z - 0.01);
+    root.add(pane);
+    const dot = new Mesh(unit, DOT);
+    dot.scale.set(0.0035, 0.0035, 0.001);
+    dot.position.set(0, y, z - 0.011);
+    root.add(dot);
+    G.sightY = y;
+  }
+  if (w.att.muzzle && id !== 'rocket') {
+    const m = G.muzzle;
+    box(root, 0.034, 0.034, 0.07, DARK, m.x, m.y, m.z + 0.03);
+    G.muzzle = m.clone().setZ(m.z - 0.01);
+  }
+  if (w.att.grip) {
+    box(root, 0.03, 0.09, 0.035, DARK, G.support.x, G.support.y - 0.065, G.support.z);
+    G.support = G.support.clone().setY(G.support.y - 0.07);
+  }
+  return G;
+}
+
 /** The base gun plus whatever attachments it carries. */
 export function buildViewGun(w: WeaponInstance): GunParts {
+  if (TOY && toonReady()) return buildToonView(w);
   const P = buildBase(w);
   const a = w.att;
   if (a.scope && w.def.id !== 'sniper') {
@@ -156,6 +212,8 @@ export function buildViewGun(w: WeaponInstance): GunParts {
     // Mythic: a glowing pink stripe down the side.
     for (const s of [-1, 1]) box(P.root, 0.004, 0.012, 0.22, 0xff3fd0, s * 0.032, P.sightY - 0.035, -0.12, 0, 0xff3fd0);
   }
+  // Army-man green unless a camo is picked in the locker.
+  if (camo === null || w.def.mythic) armyGreen(P.root, !!w.def.mythic);
   return P;
 }
 
@@ -680,6 +738,9 @@ export class ViewModel {
   setSkin(sleeve: number, cuff: number, glow: number, hand = 0xd39a76) {
     SKIN.color.setHex(hand);
     KNUCKLE.color.setHex(hand).multiplyScalar(0.9);
+    // Plastic army-man hands are glossy; real skin isn't.
+    const glossy = hand === sleeve;
+    for (const m of [SKIN, KNUCKLE]) if ('roughness' in m) m.roughness = glossy ? 0.26 : 0.6;
     this.sleeveMat.color.setHex(sleeve);
     this.cuffMat.color.setHex(cuff);
     this.cuffMat.emissive.setHex(glow ? glow : 0);

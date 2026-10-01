@@ -27,7 +27,7 @@ export const PAD_LAYOUT: [string, string][] = [
   ['B', 'Crouch / Slide'],
   ['X', 'Reload'],
   ['Y', 'Swap weapon'],
-  ['LB', 'Grenade (tap: ready, hold: wheel)'],
+  ['LB', 'Grenade (tap: throw, hold: wheel)'],
   ['RB', 'Armor plate'],
   ['D▲', 'Medkit'],
   ['D▼', 'Pick up / Open / Drive / Zipline'],

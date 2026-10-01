@@ -1,12 +1,12 @@
 import {
-  AdditiveBlending, BoxGeometry, DoubleSide, BufferGeometry, Color, DynamicDrawUsage, IcosahedronGeometry, InstancedBufferAttribute,
+  AdditiveBlending, BoxGeometry, DoubleSide, FrontSide, BufferGeometry, Color, DynamicDrawUsage, IcosahedronGeometry, InstancedBufferAttribute,
   InstancedMesh, MeshBasicMaterial, NormalBlending, Object3D, PlaneGeometry, Scene, ShaderMaterial, UniformsLib, UniformsUtils, Vector3,
 } from 'three';
 
 /** Per-instance RGBA, fog-aware, cheap fake lighting. One draw call per particle layer. */
 function particleMaterial(additive: boolean, lit: boolean) {
   return new ShaderMaterial({
-    side: lit ? DoubleSide : undefined,
+    side: lit ? DoubleSide : FrontSide,
     uniforms: UniformsUtils.merge([UniformsLib.fog]),
     vertexShader: /* glsl */ `
       attribute vec4 aColor;
